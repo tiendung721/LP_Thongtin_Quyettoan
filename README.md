@@ -24,7 +24,8 @@ Lô mới thay thế lô cũ, và sau khi nhập xong sạch lỗi thì file t�
 
 - Windows 10/11
 - Python 3.11 trở lên (khuyến nghị 3.11 hoặc 3.12)
-- Không cần internet, không gọi API ChatGPT, không can thiệp trình duyệt
+- Không gọi API ChatGPT; GPT Custom chạy trong một profile Chrome riêng để phần
+  mềm có thể tự đóng đúng cửa sổ trợ lý mà không ảnh hưởng Chrome cá nhân.
 
 ## 2. Cài đặt Python
 
@@ -123,7 +124,9 @@ Mọi thao tác hằng ngày nằm ở tab **Chức năng**, theo 4 bước, m�
    **bảng tổng quan cả lô**: phía trên là số liệu tóm tắt (số file, số dòng, dòng
    OK, dòng cần kiểm tra, cảnh báo, số lượng theo loại chứng từ), bên dưới là mỗi
    dòng bóc tách một hàng. Chọn một dòng rồi bấm **Sửa dòng** hoặc **Xóa dòng**,
-   sửa xong bấm **Lưu**. Dòng nào Bước 3 chưa nhập được sẽ được **tô đỏ kèm lý do**.
+   sửa xong bấm **Lưu**. Khi bảng kiểm tra tự mở thành công, cửa sổ Chrome của
+   GPT Custom được tự động đóng. Dòng nào Bước 3 chưa nhập được sẽ được **tô đỏ
+   kèm lý do**.
 3. **Bước 3 — Nhập lên file hàng ngày.** Phần mềm đọc thẳng file JSON bạn vừa xem
    ở Bước 2, tự ghép Phiếu cân với Bill theo container, tạo/cập nhật SQT PM và
    ghép khoản chi theo Ngày tháng + Container.
@@ -195,6 +198,8 @@ File `.exe` sẽ nằm trong thư mục `dist\QuyetToanAssistant\`.
 - Dùng giờ local của Windows (không dùng UTC).
 - Có thể tắt/mở lại app bất kỳ lúc nào; phần mềm tự nhận lại file bóc tách đang
   dùng, hoặc file mới nhất trong thư mục `output`.
+- Lệnh tự đóng chỉ nhắm tới Chrome dùng `RPA_ChatGPT_Profile` và chỉ chạy với file
+  mới của phiên trợ lý hiện tại; thao tác mở lại file ở Bước 2 không đóng Chrome.
 - Chỉ các dòng có **Trạng thái kiểm tra = OK** và **Trạng thái nhập = Chưa nhập**
   mới đủ điều kiện cho luồng RPA ở Bước 4.
 - Mọi lỗi được ghi vào log tại `D:\RPA_QuyetToan\Logs\app_YYYYMMDD.log`.

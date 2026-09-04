@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import time
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -57,6 +58,11 @@ from .daily_import_ui import (
 )
 from .database import Database
 from .dialogs.select_sqt_dialog import SelectSqtDialog
+from .services.assistant_browser import (
+    AssistantBrowserError,
+    output_is_from_session,
+    request_assistant_browser_close,
+)
 from .services.rpa_launcher import RpaLaunchError, launch_bat, validate_bat_path
 from .services.sqt_selection_service import (
     DailyFileLockedError,
@@ -153,6 +159,8 @@ class MainWindow(QMainWindow):
         self._select_sqt_dialog_open = False
         self._rpa_launched_at: Optional[str] = None
         self._last_saved_shown = ""
+        self._assistant_session_active = False
+        self._assistant_launched_at: Optional[float] = None
 
         self.setWindowTitle("Trợ Lý Quyết Toán RPA")
         self.resize(1120, 800)
@@ -1211,6 +1219,8 @@ class MainWindow(QMainWindow):
                 shell=True,
                 cwd=os.path.dirname(bat_path) or None,
             )
+            self._assistant_session_active = True
+            self._assistant_launched_at = time.time()
             self.set_overall_status(
                 "WAITING_FOR_DOWNLOAD",
                 "Đã mở trợ lý quyết toán. Đang chờ file output trong thư mục output...",
@@ -1269,6 +1279,31 @@ class MainWindow(QMainWindow):
         self.set_overall_status("ERROR", message)
         self.append_log("LỖI: " + message)
 
+    def _should_close_assistant_for_output(self, path: str) -> bool:
+        """Chỉ đóng trình duyệt cho file mới thuộc phiên trợ lý đang hoạt động."""
+        return self._assistant_session_active and output_is_from_session(
+            path,
+            self._assistant_launched_at,
+        )
+
+    def _close_active_assistant_browser(self) -> None:
+        """Gửi lệnh đóng Chrome trợ lý sau khi popup JSON đã xuất hiện."""
+        if not self._assistant_session_active:
+            return
+
+        # Mỗi phiên chỉ gửi đúng một yêu cầu đóng. Nếu script ngoài bị thiếu/lỗi,
+        # popup vẫn tiếp tục hoạt động và người dùng có thể đóng Chrome thủ công.
+        self._assistant_session_active = False
+        self._assistant_launched_at = None
+        try:
+            request_assistant_browser_close(self.config.bat_path, logger=self.logger)
+        except AssistantBrowserError as exc:
+            self.logger.warning("Không tự đóng được trình duyệt trợ lý: %s", exc)
+            self.append_log(f"CẢNH BÁO: Không tự đóng được trình duyệt trợ lý: {exc}")
+            return
+
+        self.append_log("Đã tự động đóng cửa sổ trình duyệt trợ lý.")
+
     def on_view_extract_file(self) -> None:
         """Bước 2: mở lại file bóc tách để xem/chỉnh sửa."""
         if not self.current_working_file:
@@ -1304,6 +1339,10 @@ class MainWindow(QMainWindow):
         path = cw.get("working_path") or ""
         try:
             dialog = JsonExtractDialog(path, self, error_rows=error_rows)
+            if auto and self._should_close_assistant_for_output(path):
+                # singleShot chạy khi event loop modal của dialog đã bắt đầu, tức
+                # popup đã xuất hiện rồi mới gửi lệnh đóng cửa sổ GPT Custom.
+                QTimer.singleShot(0, self._close_active_assistant_browser)
             dialog.exec()
             if dialog.saved:
                 cw["file_size"] = os.path.getsize(path)
