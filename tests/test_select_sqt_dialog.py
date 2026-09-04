@@ -12,7 +12,10 @@ except ModuleNotFoundError:  # pragma: no cover - depends on local GUI deps
     raise unittest.SkipTest("PySide6 is not installed in this test environment")
 
 from app.dialogs.select_sqt_dialog import SelectSqtDialog  # noqa: E402
-from app.services.sqt_selection_service import SqtSelectionItem  # noqa: E402
+from app.services.sqt_selection_service import (  # noqa: E402
+    EXPENSE_SELECTION_OPERATION,
+    SqtSelectionItem,
+)
 
 
 def _app() -> QApplication:
@@ -60,6 +63,64 @@ class SelectSqtDialogTests(unittest.TestCase):
 
         self.assertEqual(dialog.result(), QDialog.Accepted)
         self.assertEqual(dialog.selected_values(), ["597"])
+
+    def test_pending_and_imported_are_separate_tabs_with_shared_selection(self) -> None:
+        items = [
+            SqtSelectionItem("700", 2),
+            SqtSelectionItem("701", 1, imported_row_count=1),
+            SqtSelectionItem("702", 3, imported_row_count=2),
+        ]
+        dialog = SelectSqtDialog(items)
+
+        self.assertEqual(dialog.tabs.tabText(0), "CẦN NHẬP (2)")
+        self.assertEqual(dialog.tabs.tabText(1), "ĐÃ NHẬP (1)")
+
+        dialog.checkboxes[0].setChecked(True)
+        dialog.tabs.setCurrentIndex(1)
+        dialog.checkboxes[1].setChecked(True)
+
+        self.assertEqual(dialog.selected_values(), ["700", "701"])
+        self.assertIn("1 cần nhập", dialog.selection_summary.text())
+        self.assertIn("1 nhập lại", dialog.selection_summary.text())
+
+    def test_switching_month_clears_selection_from_previous_month(self) -> None:
+        items = [
+            SqtSelectionItem("700", 1, "Tháng 7", (2,)),
+            SqtSelectionItem("600", 1, "Tháng 6", (2,)),
+        ]
+        dialog = SelectSqtDialog(items)
+        dialog.checkboxes[0].setChecked(True)
+
+        dialog.month_combo.setCurrentIndex(1)
+        dialog.checkboxes[1].setChecked(True)
+
+        self.assertFalse(dialog.checkboxes[0].isChecked())
+        self.assertEqual(dialog.selected_values(), ["600"])
+        self.assertEqual(dialog.selected_items()[0].sheet_name, "Tháng 6")
+
+    def test_imported_selection_requires_confirmation(self) -> None:
+        item = SqtSelectionItem("701", 1, imported_row_count=1)
+        dialog = SelectSqtDialog([item])
+        dialog.checkboxes[0].setChecked(True)
+
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.No) as question:
+            dialog._on_run()
+        question.assert_called_once()
+        self.assertEqual(dialog.result(), QDialog.Rejected)
+
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+            dialog._on_run()
+        self.assertEqual(dialog.result(), QDialog.Accepted)
+
+    def test_expense_dialog_uses_expense_labels(self) -> None:
+        dialog = SelectSqtDialog(
+            [SqtSelectionItem("700", 2)],
+            operation=EXPENSE_SELECTION_OPERATION,
+        )
+
+        self.assertIn("khoản chi", dialog.windowTitle())
+        self.assertEqual(dialog.btn_run.text(), "Chạy nhập khoản chi")
+        self.assertFalse(dialog.month_combo.isVisible())
 
 
 if __name__ == "__main__":

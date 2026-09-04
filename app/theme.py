@@ -125,6 +125,33 @@ QAbstractItemView QLineEdit {
 }
 QCheckBox { spacing: 8px; color: #374151; }
 
+/* ---------- Chọn SQT theo luồng trạng thái ---------- */
+QTabWidget#sqtStatusTabs::pane {
+    background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 9px;
+    top: -1px;
+}
+QTabWidget#sqtStatusTabs QTabBar::tab {
+    background: #F3F4F6; color: #64748B; border: 1px solid #E5E7EB;
+    padding: 10px 28px; min-width: 150px; font-weight: 700;
+}
+QTabWidget#sqtStatusTabs QTabBar::tab:first {
+    border-top-left-radius: 8px;
+}
+QTabWidget#sqtStatusTabs QTabBar::tab:last {
+    border-top-right-radius: 8px;
+}
+QTabWidget#sqtStatusTabs QTabBar::tab:selected {
+    background: #EFF6FF; color: #1D4ED8; border-color: #93C5FD;
+}
+QFrame#sqtSelectionRow {
+    background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px;
+}
+QFrame#sqtSelectionRow:hover { border-color: #93C5FD; background: #FAFCFF; }
+QCheckBox#sqtChoice { font-weight: 600; color: #111827; }
+QLabel#sqtRowCount { color: #64748B; }
+QLabel#sqtPartialHint { color: #B45309; font-size: 9pt; padding-left: 25px; }
+QLabel#sqtSelectionSummary { color: #475569; font-size: 9.5pt; }
+
 /* ---------- Thanh tiến trình ---------- */
 QProgressBar {
     background: #EEF2F7; border: none; border-radius: 3px;

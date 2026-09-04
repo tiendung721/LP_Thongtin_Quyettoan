@@ -1724,7 +1724,7 @@ class MainWindow(QMainWindow):
             return
 
         self.logger.info("Đọc được %s SQT từ sheet %s.", len(sqt_items), sheet_name)
-        dialog = SelectSqtDialog(sqt_items, self)
+        dialog = SelectSqtDialog(sqt_items, self, operation=operation)
         self._select_sqt_dialog_open = True
         self._update_button_states()
         try:

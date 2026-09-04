@@ -14,6 +14,7 @@ from app.services.sqt_selection_service import (
     MissingColumnError,
     MissingSheetError,
     MultipleSheetsSelectedError,
+    is_imported_status,
     normalize_sqt_value,
     read_sqt_items,
     resolve_selection_sheet,
@@ -60,6 +61,45 @@ class SqtSelectionServiceTests(unittest.TestCase):
         self.assertEqual(normalize_sqt_value("596.0"), "596")
         self.assertEqual(normalize_sqt_value(""), "")
         self.assertEqual(normalize_sqt_value(None), "")
+
+    def test_imported_status_accepts_supported_values(self) -> None:
+        self.assertTrue(is_imported_status("Đã nhập"))
+        self.assertTrue(is_imported_status("  Hoàn thành  "))
+        self.assertFalse(is_imported_status("Chưa nhập"))
+        self.assertFalse(is_imported_status(""))
+
+    def test_read_sqt_items_aggregates_row_status(self) -> None:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = INFO_SHEET
+        ws.append(["SQT PM", "Số Container", "Trạng thái nhập"])
+        ws.append([700, "CONT01", "Đã nhập"])
+        ws.append([700, "CONT02", "Chưa nhập"])
+        ws.append([701, "CONT03", "Hoàn thành"])
+        ws.append([702, "CONT04", None])
+        wb.save(self.daily)
+        wb.close()
+
+        items = read_sqt_items(str(self.daily))
+
+        self.assertEqual(
+            [
+                (
+                    item.value,
+                    item.row_count,
+                    item.imported_row_count,
+                    item.pending_row_count,
+                    item.is_fully_imported,
+                    item.is_partially_imported,
+                )
+                for item in items
+            ],
+            [
+                ("700", 2, 1, 1, False, True),
+                ("701", 1, 1, 0, True, False),
+                ("702", 1, 0, 1, False, False),
+            ],
+        )
 
     def test_read_sqt_items_keeps_first_seen_order_and_counts_rows(self) -> None:
         self._make_daily([596, 596.0, "597", "", None, "596", 598.0])

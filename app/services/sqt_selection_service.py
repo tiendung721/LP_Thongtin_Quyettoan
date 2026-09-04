@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
+import unicodedata
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,7 @@ from .. import file_utils
 from ..daily_import import INFO_SHEET, is_month_info_sheet
 
 SQT_COLUMN = "SQT PM"
+STATUS_COLUMN = "Trạng thái nhập"
 SELECTION_OPERATION = "NHAP_THONG_TIN"
 EXPENSE_SELECTION_OPERATION = "NHAP_KHOAN_CHI"
 
@@ -69,6 +72,19 @@ class SqtSelectionItem:
     row_count: int
     sheet_name: str = ""
     row_numbers: tuple[int, ...] = ()
+    imported_row_count: int = 0
+
+    @property
+    def pending_row_count(self) -> int:
+        return max(0, self.row_count - self.imported_row_count)
+
+    @property
+    def is_fully_imported(self) -> bool:
+        return self.row_count > 0 and self.pending_row_count == 0
+
+    @property
+    def is_partially_imported(self) -> bool:
+        return self.imported_row_count > 0 and self.pending_row_count > 0
 
     @property
     def display_text(self) -> str:
@@ -110,6 +126,15 @@ def normalize_sqt_value(value: Any) -> str:
     return text
 
 
+def is_imported_status(value: Any) -> bool:
+    """Return whether an Excel import-status cell represents a completed row."""
+    text = unicodedata.normalize("NFD", str(value or ""))
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    text = text.upper().replace("Đ", "D")
+    key = re.sub(r"\s+", " ", text).strip()
+    return key in {"DA NHAP", "HOAN THANH"}
+
+
 def _header_map(ws) -> dict[str, int]:
     return {
         str(cell.value).strip(): cell.column
@@ -146,7 +171,7 @@ def read_sqt_items(daily_file: str, sheet_name: str = INFO_SHEET) -> List[SqtSel
         wb = load_workbook(daily_file, read_only=True, data_only=True)
         sheet_names = _info_sheet_names(wb, sheet_name)
 
-        counts: "OrderedDict[tuple[str, str], list[int]]" = OrderedDict()
+        counts: "OrderedDict[tuple[str, str], dict[str, Any]]" = OrderedDict()
         for current_sheet in sheet_names:
             ws = wb[current_sheet]
             headers = _header_map(ws)
@@ -156,31 +181,41 @@ def read_sqt_items(daily_file: str, sheet_name: str = INFO_SHEET) -> List[SqtSel
                 )
 
             sqt_col = headers[SQT_COLUMN]
+            status_col = headers.get(STATUS_COLUMN)
+            max_col = max(sqt_col, status_col or sqt_col)
             for row_number, row in enumerate(
                 ws.iter_rows(
                     min_row=2,
-                    min_col=sqt_col,
-                    max_col=sqt_col,
+                    min_col=1,
+                    max_col=max_col,
                     values_only=True,
                 ),
                 start=2,
             ):
-                sqt = normalize_sqt_value(row[0] if row else None)
+                sqt = normalize_sqt_value(row[sqt_col - 1] if row else None)
                 if not sqt:
                     continue
                 key = (current_sheet if len(sheet_names) > 1 else "", sqt)
-                counts.setdefault(key, []).append(row_number)
+                entry = counts.setdefault(
+                    key,
+                    {"row_numbers": [], "imported_row_count": 0},
+                )
+                entry["row_numbers"].append(row_number)
+                status = row[status_col - 1] if status_col and row else None
+                if is_imported_status(status):
+                    entry["imported_row_count"] += 1
 
         if not counts:
             raise EmptySqtListError("Sheet không có SQT hợp lệ.")
         return [
             SqtSelectionItem(
                 value=sqt,
-                row_count=len(row_numbers),
+                row_count=len(entry["row_numbers"]),
                 sheet_name=sheet,
-                row_numbers=tuple(row_numbers),
+                row_numbers=tuple(entry["row_numbers"]),
+                imported_row_count=entry["imported_row_count"],
             )
-            for (sheet, sqt), row_numbers in counts.items()
+            for (sheet, sqt), entry in counts.items()
         ]
     except SqtSelectionError:
         raise
