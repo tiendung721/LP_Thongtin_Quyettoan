@@ -74,6 +74,16 @@ CREATE TABLE IF NOT EXISTS daily_import_runs (
     completed_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS import_resolution_drafts (
+    output_path TEXT PRIMARY KEY,
+    output_hash TEXT NOT NULL,
+    daily_path TEXT NOT NULL,
+    daily_hash TEXT NOT NULL,
+    resolutions_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_staged_rows_state ON staged_rows(state);
 CREATE INDEX IF NOT EXISTS idx_staged_rows_container ON staged_rows(container_norm);
 """
@@ -504,5 +514,68 @@ class Database:
                     _now(),
                     run_id,
                 ),
+            )
+            conn.commit()
+
+    # ------------------------------------------------------------------ #
+    # Bản nháp lựa chọn trong cửa sổ xử lý Bước 3
+    # ------------------------------------------------------------------ #
+    def save_import_resolution_draft(
+        self,
+        output_path: str,
+        output_hash: str,
+        daily_path: str,
+        daily_hash: str,
+        resolutions: Dict[str, Any],
+    ) -> None:
+        now = _now()
+        payload = json.dumps(resolutions, ensure_ascii=False, default=str)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO import_resolution_drafts (
+                    output_path, output_hash, daily_path, daily_hash,
+                    resolutions_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(output_path) DO UPDATE SET
+                    output_hash = excluded.output_hash,
+                    daily_path = excluded.daily_path,
+                    daily_hash = excluded.daily_hash,
+                    resolutions_json = excluded.resolutions_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    output_path,
+                    output_hash,
+                    daily_path,
+                    daily_hash,
+                    payload,
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+
+    def get_import_resolution_draft(self, output_path: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM import_resolution_drafts WHERE output_path = ?",
+                (output_path,),
+            ).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        try:
+            result["resolutions"] = json.loads(result.pop("resolutions_json"))
+        except (json.JSONDecodeError, TypeError):
+            result["resolutions"] = {}
+            result.pop("resolutions_json", None)
+        return result
+
+    def delete_import_resolution_draft(self, output_path: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM import_resolution_drafts WHERE output_path = ?",
+                (output_path,),
             )
             conn.commit()

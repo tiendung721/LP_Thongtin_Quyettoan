@@ -24,6 +24,9 @@ if TYPE_CHECKING:  # tránh import vòng khi chạy thật
     from .database import Database
 
 
+DELETE_GRACE_SECONDS = 0.5
+
+
 class WatcherSignals(QObject):
     """Các tín hiệu phát về luồng UI (kết nối kiểu queued tự động)."""
 
@@ -53,7 +56,7 @@ class _OutputEventHandler(FileSystemEventHandler):
 
     def on_deleted(self, event):
         if not event.is_directory:
-            self.watcher.forget(event.src_path)
+            self.watcher.defer_forget(event.src_path)
 
 
 class OutputWatcher:
@@ -68,7 +71,13 @@ class OutputWatcher:
         # Các file đã ghi nhận trong phiên này -> bỏ qua sự kiện sửa file sau đó
         # (khi người dùng chỉnh & lưu file ngay trong thư mục output).
         self._handled_paths = set()
+        self._pending_forgets = {}
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _path_key(path: str) -> str:
+        """Khóa so sánh đường dẫn ổn định cho các event khác nhau."""
+        return os.path.normcase(os.path.abspath(os.path.normpath(path)))
 
     # ------------------------------------------------------------------ #
     def start(self) -> None:
@@ -94,6 +103,11 @@ class OutputWatcher:
                 pass
             self._observer = None
             self.logger.info("Đã dừng theo dõi thư mục output.")
+        with self._lock:
+            pending = list(self._pending_forgets.values())
+            self._pending_forgets.clear()
+        for timer in pending:
+            timer.cancel()
 
     # ------------------------------------------------------------------ #
     def mark_handled(self, path: str) -> None:
@@ -105,8 +119,9 @@ class OutputWatcher:
         """
         if not path:
             return
+        key = self._path_key(path)
         with self._lock:
-            self._handled_paths.add(path)
+            self._handled_paths.add(key)
 
     # ------------------------------------------------------------------ #
     def forget(self, path: str) -> None:
@@ -115,13 +130,49 @@ class OutputWatcher:
         Nhờ vậy nếu người dùng xóa file cũ rồi lưu file mới trùng tên, phần
         mềm vẫn nhận đó là file mới thay vì bỏ qua.
         """
+        key = self._path_key(path)
         with self._lock:
-            self._handled_paths.discard(path)
+            timer = self._pending_forgets.pop(key, None)
+            self._handled_paths.discard(key)
+        if timer is not None:
+            timer.cancel()
+
+    def defer_forget(self, path: str) -> None:
+        """Chỉ quên file nếu nó vẫn biến mất sau một khoảng ngắn.
+
+        ``os.replace`` trên Windows phát event xóa file đích rồi event chuyển
+        file tạm vào cùng đường dẫn. Quên ngay ở event xóa sẽ khiến lần
+        Lưu trong trình chỉnh JSON bị nhận nhầm thành file output mới.
+        """
+        if not path:
+            return
+        normalized_path = os.path.abspath(os.path.normpath(path))
+        key = self._path_key(normalized_path)
+        timer = None
+
+        def forget_if_still_missing() -> None:
+            with self._lock:
+                if self._pending_forgets.get(key) is not timer:
+                    return
+                self._pending_forgets.pop(key, None)
+                if not os.path.exists(normalized_path):
+                    self._handled_paths.discard(key)
+
+        timer = threading.Timer(DELETE_GRACE_SECONDS, forget_if_still_missing)
+        timer.daemon = True
+        with self._lock:
+            previous = self._pending_forgets.get(key)
+            self._pending_forgets[key] = timer
+        if previous is not None:
+            previous.cancel()
+        timer.start()
 
     # ------------------------------------------------------------------ #
     def handle_candidate(self, path: str) -> None:
         """Lọc nhanh và khởi động luồng xử lý cho một file ứng viên."""
         try:
+            path = os.path.abspath(os.path.normpath(path))
+            key = self._path_key(path)
             # Bỏ qua file tạm khi file output chưa ghi xong.
             if file_utils.is_temp_output_file(path):
                 return
@@ -134,9 +185,12 @@ class OutputWatcher:
                 return
 
             with self._lock:
-                if path in self._processing or path in self._handled_paths:
+                pending = self._pending_forgets.pop(key, None)
+                if pending is not None:
+                    pending.cancel()
+                if key in self._processing or key in self._handled_paths:
                     return
-                self._processing.add(path)
+                self._processing.add(key)
 
             worker = threading.Thread(
                 target=self._process_file, args=(path,), daemon=True
@@ -148,6 +202,7 @@ class OutputWatcher:
     # ------------------------------------------------------------------ #
     def _process_file(self, path: str) -> None:
         """Chờ file ổn định, thu thập thông tin và ghi database."""
+        key = self._path_key(path)
         name = os.path.basename(path)
         try:
             self._emit_log(f"Phát hiện file mới: {name}")
@@ -189,7 +244,7 @@ class OutputWatcher:
 
             # Ghi nhận đã xử lý -> bỏ qua các sự kiện sửa file về sau.
             with self._lock:
-                self._handled_paths.add(path)
+                self._handled_paths.add(key)
 
             self.logger.info(
                 "Đã ghi database bản ghi #%s cho file %s",
@@ -204,7 +259,7 @@ class OutputWatcher:
             )
         finally:
             with self._lock:
-                self._processing.discard(path)
+                self._processing.discard(key)
 
     # ------------------------------------------------------------------ #
     def _emit_log(self, message: str) -> None:

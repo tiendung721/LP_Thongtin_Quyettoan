@@ -3,11 +3,9 @@
 Module này không phụ thuộc giao diện Qt. Giao diện chỉ gọi ``analyze`` để lấy
 kế hoạch, thu thập lựa chọn của người dùng rồi gọi ``commit`` để ghi an toàn.
 
-File JSON bóc tách được coi là bộ nhớ tạm: mỗi lần phân tích chỉ làm việc với
-đúng các dòng đang có trong file, không kéo dữ liệu chờ của các lần trước vào.
-Dòng nào không ghép được với dữ liệu quyết toán thì trả về trong
-``ImportAnalysis.unmatched_rows`` để người dùng sửa lại ở Bước 2 hoặc bỏ đi,
-chứ không ghi nửa vời vào file theo dõi.
+File JSON bóc tách được coi là bộ nhớ tạm của lô. Các dòng chưa rõ được trả về
+dưới dạng ``ImportIssue`` kèm ứng viên để giao diện cho người dùng sửa, chọn hoặc
+bỏ qua trong lần nhập hiện tại. Excel chỉ được ghi khi mọi issue đã có quyết định.
 """
 
 from __future__ import annotations
@@ -39,6 +37,7 @@ INFO_HEADERS = [
     "Ngày Đóng",
     "Số Container",
     "Biển số xe",
+    "Số B/L",
     "Số chì/Seal",
     "Lô SX",
     "Số tấn",
@@ -69,6 +68,10 @@ INFO_TECHNICAL_HEADERS = {
 }
 
 INFO_HEADER_ALIASES = {
+    "B/L": "Số B/L",
+    "Số Bill": "Số B/L",
+    "Bill No": "Số B/L",
+    "Bill No.": "Số B/L",
     "Số chì": "Số chì/Seal",
     "Hóa Đơn": "Hóa Đơn quyết toán",
     "Mã MD5": "MD5",
@@ -105,6 +108,16 @@ DOC_LABELS = {
 STATE_READY = "READY"
 STATE_COMPLETED = "COMPLETED"
 STATE_IGNORED = "IGNORED"
+
+ISSUE_MULTIPLE_TARGETS = "MULTIPLE_TARGETS"
+ISSUE_MULTIPLE_BILLS = "MULTIPLE_BILLS"
+ISSUE_NO_TARGET = "NO_TARGET"
+ISSUE_MISSING_CLOSE_DATE = "MISSING_CLOSE_DATE"
+ISSUE_FIELD_CONFLICT = "FIELD_CONFLICT"
+
+RESOLUTION_SELECT = "SELECT"
+RESOLUTION_FIELDS = "FIELDS"
+RESOLUTION_SKIP = "SKIP"
 
 # Lý do một dòng bóc tách không ghép được với dữ liệu quyết toán.
 REASON_NO_TARGET = "Không tìm thấy dòng quyết toán tương ứng"
@@ -202,6 +215,71 @@ class FieldConflict:
 
 
 @dataclass
+class ImportCandidate:
+    """Một dòng Excel hoặc Bill mà người dùng có thể chọn để ghép."""
+
+    candidate_id: str
+    kind: str
+    label: str
+    sheet_name: str = ""
+    row_number: int = 0
+    sqt: int = 0
+    json_index: int = -1
+    staged_id: int = 0
+    values: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ImportIssue:
+    """Một vấn đề cần quyết định trước khi được phép ghi Excel."""
+
+    issue_id: str
+    kind: str
+    title: str
+    reason: str
+    doc_type: str
+    container: str
+    match_date: Optional[str]
+    reference: str
+    json_indexes: List[int] = field(default_factory=list)
+    staged_ids: List[int] = field(default_factory=list)
+    candidates: List[ImportCandidate] = field(default_factory=list)
+    conflicts: List[FieldConflict] = field(default_factory=list)
+
+    @property
+    def doc_label(self) -> str:
+        return DOC_LABELS.get(self.doc_type, self.doc_type or "Chứng từ")
+
+
+@dataclass
+class IssueResolution:
+    """Quyết định của người dùng cho một :class:`ImportIssue`."""
+
+    issue_id: str
+    action: str
+    candidate_id: str = ""
+    field_choices: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, issue_id: str, value: Any) -> Optional["IssueResolution"]:
+        if not isinstance(value, dict):
+            return None
+        action = str(value.get("action") or "").upper()
+        if action not in {RESOLUTION_SELECT, RESOLUTION_FIELDS, RESOLUTION_SKIP}:
+            return None
+        choices = value.get("field_choices")
+        return cls(
+            issue_id=issue_id,
+            action=action,
+            candidate_id=str(value.get("candidate_id") or ""),
+            field_choices=choices if isinstance(choices, dict) else {},
+        )
+
+
+@dataclass
 class InfoChange:
     action: str
     target_row: Optional[int]
@@ -222,6 +300,7 @@ class ExpenseChange:
     staged_ids: List[int]
     document_md5s: List[str]
     check_status: str = "OK"
+    conflicts: List[FieldConflict] = field(default_factory=list)
 
 
 @dataclass
@@ -238,6 +317,13 @@ class ImportAnalysis:
     pending_count: int = 0
     pending_states: Dict[int, Tuple[str, str]] = field(default_factory=dict)
     completed_staged_ids: List[int] = field(default_factory=list)
+    source_hash: str = ""
+    daily_hash: str = ""
+    issues: List[ImportIssue] = field(default_factory=list)
+    resolutions: Dict[str, IssueResolution] = field(default_factory=dict)
+    conflict_decisions: Dict[str, bool] = field(default_factory=dict)
+    skipped_staged_ids: List[int] = field(default_factory=list)
+    skipped_json_indexes: List[int] = field(default_factory=list)
 
     @property
     def new_info_count(self) -> int:
@@ -250,6 +336,14 @@ class ImportAnalysis:
     @property
     def has_changes(self) -> bool:
         return bool(self.info_changes or self.expense_changes)
+
+    @property
+    def unresolved_issues(self) -> List[ImportIssue]:
+        return [issue for issue in self.issues if issue.issue_id not in self.resolutions]
+
+    @property
+    def skipped_count(self) -> int:
+        return len(set(self.skipped_json_indexes))
 
 
 @dataclass
@@ -484,14 +578,27 @@ def load_extract_payload(path: str) -> Dict[str, Any]:
 
 
 def save_extract_payload(path: str, payload: Dict[str, Any]) -> None:
-    """Ghi lại file JSON tạm sau khi người dùng sửa/xóa dòng."""
+    """Ghi nguyên tử file JSON tạm sau khi người dùng chỉnh sửa."""
     refresh_extract_metadata(payload)
+    destination = Path(path)
+    temp_path = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
             f.write("\n")
+        os.replace(temp_path, destination)
     except OSError as exc:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass
         raise DailyImportError(f"Không lưu được file JSON bóc tách: {exc}") from exc
+
+
+def extract_payload_hash(payload: Dict[str, Any]) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def refresh_extract_metadata(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -625,6 +732,203 @@ class DailyImportService:
         self.logger = logger
         self.cargo_mappings = cargo_mappings or {}
 
+    @staticmethod
+    def _normalize_resolutions(values: Optional[Dict[str, Any]]) -> Dict[str, IssueResolution]:
+        result: Dict[str, IssueResolution] = {}
+        for issue_id, value in (values or {}).items():
+            if isinstance(value, IssueResolution):
+                result[str(issue_id)] = value
+                continue
+            resolution = IssueResolution.from_dict(str(issue_id), value)
+            if resolution:
+                result[str(issue_id)] = resolution
+        return result
+
+    @staticmethod
+    def _issue_id(kind: str, *parts: Any) -> str:
+        raw = "|".join([kind, *(str(part) for part in parts)])
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _target_candidate(row: _TargetInfoRow) -> ImportCandidate:
+        raw = (
+            f"INFO|{row.sheet_name}|{row.row_number}|{row.sqt}|"
+            f"{row.close_date}|{row.container}"
+        )
+        candidate_id = hashlib.sha1(raw.encode("utf-8")).hexdigest()
+        return ImportCandidate(
+            candidate_id=candidate_id,
+            kind="INFO_ROW",
+            label=f"{row.sheet_name} • Dòng {row.row_number} • SQT {row.sqt}",
+            sheet_name=row.sheet_name,
+            row_number=row.row_number,
+            sqt=row.sqt,
+            values={
+                "Vị trí": f"{row.sheet_name} • Dòng {row.row_number}",
+                "SQT PM": row.sqt,
+                "Ngày đóng": row.close_date,
+                "Container": row.container,
+                "Loại hàng": row.cargo,
+                "Tên tàu": row.values.get("Tên tàu"),
+                "Người nhận": row.values.get("Người nhận"),
+            },
+        )
+
+    @staticmethod
+    def _bill_candidate(row: ExtractedRow) -> ImportCandidate:
+        raw = f"BILL|{row.json_index}|{row.md5}|{row.row_key}"
+        candidate_id = hashlib.sha1(raw.encode("utf-8")).hexdigest()
+        return ImportCandidate(
+            candidate_id=candidate_id,
+            kind="BILL",
+            label=(
+                f"Dòng JSON {row.json_index + 1} • "
+                f"{row.bill_no or row.vessel or row.source_name or 'Bill'}"
+            ),
+            json_index=row.json_index,
+            staged_id=row.staged_id,
+            values={
+                "Số B/L": row.bill_no,
+                "Container": row.container,
+                "Ngày đóng": row.close_date,
+                "Ngày chạy": row.sail_date,
+                "Tên tàu": row.vessel,
+                "VT biển": row.carrier,
+                "File nguồn": row.source_name,
+            },
+        )
+
+    @staticmethod
+    def _valid_field_resolution(
+        issue: ImportIssue, resolution: IssueResolution
+    ) -> bool:
+        if resolution.action != RESOLUTION_FIELDS:
+            return False
+        for conflict in issue.conflicts:
+            choice = resolution.field_choices.get(conflict.conflict_id)
+            if not isinstance(choice, dict):
+                return False
+            if str(choice.get("mode") or "").upper() not in {
+                "CURRENT",
+                "NEW",
+                "CUSTOM",
+            }:
+                return False
+            if (
+                str(choice.get("mode") or "").upper() == "CUSTOM"
+                and choice.get("value") in (None, "")
+            ):
+                return False
+        return True
+
+    @staticmethod
+    def _custom_conflict_value(conflict: FieldConflict, value: Any) -> Any:
+        reference = (
+            conflict.new_value
+            if conflict.new_value not in (None, "")
+            else conflict.current_value
+        )
+        if isinstance(reference, (datetime, date)):
+            parsed = parse_date(value)
+            return excel_date(parsed) if parsed else value
+        if isinstance(reference, (int, float)) and not isinstance(reference, bool):
+            parsed_number = parse_number(value)
+            if parsed_number is None:
+                return value
+            return int(parsed_number) if isinstance(reference, int) else parsed_number
+        return value
+
+    def _register_issue(
+        self,
+        analysis: ImportAnalysis,
+        issue: ImportIssue,
+        requested: Dict[str, IssueResolution],
+    ) -> Optional[IssueResolution]:
+        analysis.issues.append(issue)
+        resolution = requested.get(issue.issue_id)
+        if resolution is None:
+            return None
+        if resolution.action == RESOLUTION_SKIP:
+            analysis.resolutions[issue.issue_id] = resolution
+            analysis.skipped_staged_ids.extend(issue.staged_ids)
+            analysis.skipped_json_indexes.extend(issue.json_indexes)
+            return resolution
+        if resolution.action == RESOLUTION_SELECT and any(
+            item.candidate_id == resolution.candidate_id for item in issue.candidates
+        ):
+            analysis.resolutions[issue.issue_id] = resolution
+            return resolution
+        if self._valid_field_resolution(issue, resolution):
+            analysis.resolutions[issue.issue_id] = resolution
+            return resolution
+        return None
+
+    def _row_issue(
+        self,
+        kind: str,
+        title: str,
+        reason: str,
+        primary: ExtractedRow,
+        *,
+        related: Sequence[ExtractedRow] = (),
+        candidates: Sequence[ImportCandidate] = (),
+        conflicts: Sequence[FieldConflict] = (),
+    ) -> ImportIssue:
+        rows = [primary, *related]
+        json_indexes = sorted({row.json_index for row in rows if row.json_index >= 0})
+        staged_ids = sorted({row.staged_id for row in rows if row.staged_id})
+        issue_id = self._issue_id(kind, primary.md5, *json_indexes)
+        return ImportIssue(
+            issue_id=issue_id,
+            kind=kind,
+            title=title,
+            reason=reason,
+            doc_type=primary.doc_type,
+            container=primary.container,
+            match_date=self._match_date(primary),
+            reference=self._reference_text(primary),
+            json_indexes=json_indexes,
+            staged_ids=staged_ids,
+            candidates=list(candidates),
+            conflicts=list(conflicts),
+        )
+
+    def _apply_conflict_issue(
+        self,
+        analysis: ImportAnalysis,
+        requested: Dict[str, IssueResolution],
+        primary: ExtractedRow,
+        related: Sequence[ExtractedRow],
+        conflicts: Sequence[FieldConflict],
+        values: Dict[str, Any],
+    ) -> bool:
+        if not conflicts:
+            return True
+        issue = self._row_issue(
+            ISSUE_FIELD_CONFLICT,
+            "Dữ liệu mới khác Excel",
+            "Chọn giá trị sử dụng cho từng trường khác nhau.",
+            primary,
+            related=related,
+            conflicts=conflicts,
+        )
+        resolution = self._register_issue(analysis, issue, requested)
+        if resolution and resolution.action == RESOLUTION_SKIP:
+            return False
+        if resolution and resolution.action == RESOLUTION_FIELDS:
+            for conflict in conflicts:
+                choice = resolution.field_choices[conflict.conflict_id]
+                mode = str(choice.get("mode") or "CURRENT").upper()
+                if mode == "CURRENT":
+                    analysis.conflict_decisions[conflict.conflict_id] = False
+                else:
+                    if mode == "CUSTOM":
+                        values[conflict.field_name] = self._custom_conflict_value(
+                            conflict, choice.get("value")
+                        )
+                    analysis.conflict_decisions[conflict.conflict_id] = True
+        return True
+
     # ------------------------------------------------------------------ #
     # Phân tích
     # ------------------------------------------------------------------ #
@@ -633,6 +937,9 @@ class DailyImportService:
         output_path: str,
         daily_path: str,
         processed_file_id: Optional[int] = None,
+        *,
+        payload_override: Optional[Dict[str, Any]] = None,
+        resolutions: Optional[Dict[str, Any]] = None,
     ) -> ImportAnalysis:
         if not os.path.isfile(output_path):
             raise DailyImportError("Không tìm thấy file JSON bóc tách đang dùng.")
@@ -645,13 +952,34 @@ class DailyImportService:
                 "File theo dõi hàng ngày đang mở. Vui lòng lưu và đóng Excel rồi thử lại."
             )
 
-        parsed = self._read_output(output_path)
+        payload = payload_override or load_extract_payload(output_path)
+        source_hash = extract_payload_hash(payload)
+        daily_hash = file_utils.sha256_file(daily_path)
+        requested_resolutions = self._normalize_resolutions(resolutions)
+        if resolutions is None:
+            draft = self.database.get_import_resolution_draft(output_path)
+            if (
+                draft
+                and draft.get("output_hash") == source_hash
+                and os.path.normcase(str(draft.get("daily_path") or ""))
+                == os.path.normcase(daily_path)
+                and draft.get("daily_hash") == daily_hash
+            ):
+                requested_resolutions = self._normalize_resolutions(
+                    draft.get("resolutions")
+                )
+            elif draft:
+                self.database.delete_import_resolution_draft(output_path)
+
+        parsed = self._read_output(output_path, payload=payload)
         snapshot = self._read_daily_snapshot(daily_path)
         analysis = ImportAnalysis(
             output_path=output_path,
             daily_path=daily_path,
             processed_file_id=processed_file_id,
             extracted_rows=len(parsed),
+            source_hash=source_hash,
+            daily_hash=daily_hash,
         )
 
         # JSON tạm là nguồn dữ liệu duy nhất của lần nhập này: dọn hàng chờ cũ
@@ -679,35 +1007,18 @@ class DailyImportService:
                 row.to_dict(),
             )
 
-        # Một dòng chỉ được coi là "đã nhập" khi CẢ HAI cùng đồng ý:
-        #   - database: đúng dòng đó đã được ghi xong (một file chứng từ có thể sinh
-        #     nhiều dòng, ví dụ một ảnh khoản chi có 4 container);
-        #   - file theo dõi: MD5 của chứng từ vẫn còn trong cột MD5.
-        # Nhờ vế thứ hai, người dùng xóa dòng khỏi Excel là nhập lại được ngay mà
-        # không phải đụng vào database.
-        never_written = {
-            int(item["id"])
-            for item in self.database.list_staged_rows(include_completed=False)
-        }
-        active: List[ExtractedRow] = []
-        duplicate_md5: set[str] = set()
-        for row in parsed:
-            if not row.staged_id:
-                continue
-            written_before = row.staged_id not in never_written
-            # Chứng từ không có MD5 thì không soi được trong file theo dõi; đành chỉ
-            # dựa vào bộ nhớ của app để khỏi ghi trùng.
-            still_in_daily = row.md5_is_synthetic or row.md5 in snapshot.target_md5
-            if written_before and still_in_daily:
-                if not row.md5_is_synthetic:
-                    duplicate_md5.add(row.md5)
-                continue
-            active.append(row)
-        analysis.duplicate_documents = len(duplicate_md5)
+        # Luôn cho phép xử lý lại toàn bộ dòng trong file JSON hiện tại, kể cả khi
+        # DB đã ghi nhận hoàn tất và MD5 vẫn còn trong file theo dõi. Các bước ghép
+        # bên dưới sẽ quyết định CREATE hay UPDATE theo dữ liệu đích trong Excel.
+        active = [row for row in parsed if row.staged_id]
 
         bills_by_container: Dict[str, List[ExtractedRow]] = {}
+        all_bills_by_container: Dict[str, List[ExtractedRow]] = {}
         scales: List[ExtractedRow] = []
         expenses: List[ExtractedRow] = []
+        for row in parsed:
+            if row.doc_type == DOC_BILL:
+                all_bills_by_container.setdefault(row.container, []).append(row)
         for row in active:
             if row.doc_type == DOC_BILL:
                 bills_by_container.setdefault(row.container, []).append(row)
@@ -726,20 +1037,78 @@ class DailyImportService:
             raw_bills = bills_by_container.get(scale.container, [])
             candidates = self._distinct_bills(raw_bills)
             if len(candidates) > 1:
-                # Không tự đoán Bill nào đúng: người dùng sửa lại ở Bước 2. Báo cả
-                # Phiếu cân lẫn mọi dòng Bill của container để bỏ là bỏ hết.
-                self._mark_unmatched(analysis, scale, REASON_MANY_BILLS)
+                issue = self._row_issue(
+                    ISSUE_MULTIPLE_BILLS,
+                    "Có nhiều Bill phù hợp",
+                    REASON_MANY_BILLS,
+                    scale,
+                    related=raw_bills,
+                    candidates=[self._bill_candidate(row) for row in candidates],
+                )
+                resolution = self._register_issue(
+                    analysis, issue, requested_resolutions
+                )
+                if resolution is None:
+                    self._mark_unmatched(analysis, scale, REASON_MANY_BILLS)
+                    for bill in raw_bills:
+                        self._mark_unmatched(analysis, bill, REASON_MANY_BILLS)
+                    blocked_containers.add(scale.container)
+                    continue
+                if resolution.action == RESOLUTION_SKIP:
+                    blocked_containers.add(scale.container)
+                    continue
+                selected_candidate = next(
+                    item
+                    for item in issue.candidates
+                    if item.candidate_id == resolution.candidate_id
+                )
+                candidates = [
+                    row for row in candidates if row.json_index == selected_candidate.json_index
+                ]
                 for bill in raw_bills:
-                    self._mark_unmatched(analysis, bill, REASON_MANY_BILLS)
-                blocked_containers.add(scale.container)
-                continue
+                    if bill.json_index != selected_candidate.json_index:
+                        analysis.skipped_staged_ids.append(bill.staged_id)
+                        analysis.skipped_json_indexes.append(bill.json_index)
+                        used_bills.add(bill.staged_id)
 
             # Container khớp nhiều dòng quyết toán: Bill của container cũng sẽ khớp
             # nhiều dòng như vậy nên cứ để vòng Bill bên dưới báo lỗi cho nó.
             target_options = self._scale_target_options(virtual_rows, scale)
             if len(target_options) > 1:
-                self._mark_unmatched(analysis, scale, REASON_MANY_TARGETS)
-                continue
+                related = [candidates[0]] if candidates else []
+                issue = self._row_issue(
+                    ISSUE_MULTIPLE_TARGETS,
+                    "Khớp nhiều dòng quyết toán",
+                    REASON_MANY_TARGETS,
+                    scale,
+                    related=related,
+                    candidates=[self._target_candidate(row) for row in target_options],
+                )
+                resolution = self._register_issue(
+                    analysis, issue, requested_resolutions
+                )
+                if resolution is None:
+                    self._mark_unmatched(analysis, scale, REASON_MANY_TARGETS)
+                    for bill in related:
+                        self._mark_unmatched(analysis, bill, REASON_MANY_TARGETS)
+                        used_bills.add(bill.staged_id)
+                    continue
+                for bill in related:
+                    used_bills.add(bill.staged_id)
+                if resolution.action == RESOLUTION_SKIP:
+                    continue
+                selected_candidate = next(
+                    item
+                    for item in issue.candidates
+                    if item.candidate_id == resolution.candidate_id
+                )
+                target_options = [
+                    row
+                    for row in target_options
+                    if row.sheet_name == selected_candidate.sheet_name
+                    and row.row_number == selected_candidate.row_number
+                    and row.sqt == selected_candidate.sqt
+                ]
 
             selected_bill = candidates[0] if candidates else None
             target = target_options[0] if target_options else None
@@ -750,9 +1119,21 @@ class DailyImportService:
                 else self._target_info_sheet(snapshot, scale.close_date)
             )
             if not target_sheet:
-                self._mark_unmatched(analysis, scale, REASON_NO_MONTH)
-                if selected_bill:
-                    self._mark_unmatched(analysis, selected_bill, REASON_NO_MONTH)
+                related = [selected_bill] if selected_bill else []
+                issue = self._row_issue(
+                    ISSUE_MISSING_CLOSE_DATE,
+                    "Thiếu Ngày Đóng",
+                    REASON_NO_MONTH,
+                    scale,
+                    related=related,
+                )
+                resolution = self._register_issue(
+                    analysis, issue, requested_resolutions
+                )
+                if resolution is None:
+                    self._mark_unmatched(analysis, scale, REASON_NO_MONTH)
+                    if selected_bill:
+                        self._mark_unmatched(analysis, selected_bill, REASON_NO_MONTH)
                 continue
             sqt = target.sqt if target else next_sqt
             action = "UPDATE" if target else "CREATE"
@@ -778,6 +1159,15 @@ class DailyImportService:
             if conflicts:
                 check_status = "Cần kiểm tra"
                 analysis.conflicts.extend(conflicts)
+                if not self._apply_conflict_issue(
+                    analysis,
+                    requested_resolutions,
+                    scale,
+                    [selected_bill] if selected_bill else [],
+                    conflicts,
+                    values,
+                ):
+                    continue
             staged_ids = [scale.staged_id]
             md5_values = [self._real_md5(scale)]
             if selected_bill:
@@ -831,16 +1221,84 @@ class DailyImportService:
                 continue
 
             candidates = self._distinct_bills(remaining)
-            if len(candidates) > 1:
-                for bill in remaining:
-                    self._mark_unmatched(analysis, bill, REASON_MANY_BILLS)
-                continue
-            selected_bill = candidates[0]
+            all_candidates = self._distinct_bills(
+                all_bills_by_container.get(container, remaining)
+            )
+            if len(all_candidates) > 1:
+                issue = self._row_issue(
+                    ISSUE_MULTIPLE_BILLS,
+                    "Có nhiều Bill phù hợp",
+                    REASON_MANY_BILLS,
+                    candidates[0],
+                    related=candidates[1:],
+                    candidates=[self._bill_candidate(row) for row in all_candidates],
+                )
+                resolution = self._register_issue(
+                    analysis, issue, requested_resolutions
+                )
+                if resolution is None:
+                    for bill in remaining:
+                        self._mark_unmatched(analysis, bill, REASON_MANY_BILLS)
+                    continue
+                if resolution.action == RESOLUTION_SKIP:
+                    continue
+                selected_candidate = next(
+                    item
+                    for item in issue.candidates
+                    if item.candidate_id == resolution.candidate_id
+                )
+                selected_bill = next(
+                    (
+                        row
+                        for row in candidates
+                        if row.json_index == selected_candidate.json_index
+                    ),
+                    None,
+                )
+                if selected_bill is None:
+                    analysis.skipped_staged_ids.extend(
+                        row.staged_id for row in candidates if row.staged_id
+                    )
+                    analysis.skipped_json_indexes.extend(
+                        row.json_index for row in candidates if row.json_index >= 0
+                    )
+                    continue
+                for bill in candidates:
+                    if bill is not selected_bill:
+                        analysis.skipped_staged_ids.append(bill.staged_id)
+                        analysis.skipped_json_indexes.append(bill.json_index)
+            else:
+                selected_bill = candidates[0]
 
             target_rows = [row for row in virtual_rows if row.container == container]
             if len(target_rows) > 1:
-                self._mark_unmatched(analysis, selected_bill, REASON_MANY_TARGETS)
-                continue
+                issue = self._row_issue(
+                    ISSUE_MULTIPLE_TARGETS,
+                    "Khớp nhiều dòng quyết toán",
+                    REASON_MANY_TARGETS,
+                    selected_bill,
+                    candidates=[self._target_candidate(row) for row in target_rows],
+                )
+                resolution = self._register_issue(
+                    analysis, issue, requested_resolutions
+                )
+                if resolution is None:
+                    self._mark_unmatched(analysis, selected_bill, REASON_MANY_TARGETS)
+                    continue
+                if resolution.action == RESOLUTION_SKIP:
+                    continue
+                selected_candidate = next(
+                    item
+                    for item in issue.candidates
+                    if item.candidate_id == resolution.candidate_id
+                )
+                target_rows = [
+                    row
+                    for row in target_rows
+                    if row.sheet_name == selected_candidate.sheet_name
+                    and row.row_number == selected_candidate.row_number
+                    and row.sqt == selected_candidate.sqt
+                ]
             target = target_rows[0] if target_rows else None
             target_sheet = (
                 target.sheet_name
@@ -848,7 +1306,17 @@ class DailyImportService:
                 else self._target_info_sheet(snapshot, selected_bill.close_date)
             )
             if not target_sheet:
-                self._mark_unmatched(analysis, selected_bill, REASON_NO_MONTH)
+                issue = self._row_issue(
+                    ISSUE_MISSING_CLOSE_DATE,
+                    "Thiếu Ngày Đóng",
+                    REASON_NO_MONTH,
+                    selected_bill,
+                )
+                resolution = self._register_issue(
+                    analysis, issue, requested_resolutions
+                )
+                if resolution is None:
+                    self._mark_unmatched(analysis, selected_bill, REASON_NO_MONTH)
                 continue
             action = "UPDATE" if target else "CREATE"
             sqt = target.sqt if target else next_sqt
@@ -858,6 +1326,15 @@ class DailyImportService:
             values = self._bill_info_values(selected_bill, sqt, fallback)
             conflicts = self._find_conflicts(target, values) if target else []
             analysis.conflicts.extend(conflicts)
+            if conflicts and not self._apply_conflict_issue(
+                analysis,
+                requested_resolutions,
+                selected_bill,
+                [],
+                conflicts,
+                values,
+            ):
+                continue
             analysis.info_changes.append(
                 InfoChange(
                     action=action,
@@ -887,22 +1364,40 @@ class DailyImportService:
             analysis.pending_states[selected_bill.staged_id] = (STATE_READY, "")
             analysis.completed_staged_ids.append(selected_bill.staged_id)
 
-        self._analyze_expenses(expenses, virtual_rows, snapshot, analysis)
+        self._analyze_expenses(
+            expenses,
+            virtual_rows,
+            snapshot,
+            analysis,
+            requested_resolutions,
+        )
 
         for row_id, (state, note) in analysis.pending_states.items():
             self.database.update_staged_row(row_id, state=state, note=note)
-        # Dòng không ghép được không nằm lại hàng chờ: người dùng sẽ sửa ở Bước 2
-        # hoặc bỏ hẳn ngay trong lần nhập này.
-        stale = [
-            row.staged_id
-            for row in active
-            if row.staged_id not in analysis.pending_states
-        ]
-        if stale:
-            self.database.delete_staged_rows(stale)
+        # Dòng chưa xử lý hoặc được bỏ qua chỉ trong lần này phải nằm lại hàng chờ.
+        # Nhờ vậy lô được đánh dấu nhập một phần và người dùng có thể xử lý lại sau.
+        unresolved_staged = {
+            staged_id
+            for issue in analysis.unresolved_issues
+            for staged_id in issue.staged_ids
+        } | set(analysis.skipped_staged_ids)
+        for row in active:
+            if row.staged_id in unresolved_staged or row.staged_id not in analysis.pending_states:
+                self.database.update_staged_row(
+                    row.staged_id,
+                    state="PENDING",
+                    note="Còn chờ xử lý ở Bước 3",
+                )
         for md5 in {row.md5 for row in parsed if row.md5}:
             self.database.refresh_document_status(md5)
-        analysis.pending_count = len(analysis.unmatched_rows)
+        analysis.pending_count = len(
+            {
+                staged_id
+                for issue in analysis.unresolved_issues
+                for staged_id in issue.staged_ids
+            }
+            | set(analysis.skipped_staged_ids)
+        )
         return analysis
 
     # ------------------------------------------------------------------ #
@@ -913,11 +1408,40 @@ class DailyImportService:
         analysis: ImportAnalysis,
         conflict_decisions: Optional[Dict[str, bool]] = None,
     ) -> ImportSummary:
-        conflict_decisions = conflict_decisions or {}
+        supplied_conflict_decisions = conflict_decisions or {}
+        blocking_issues = [
+            issue
+            for issue in analysis.unresolved_issues
+            if issue.kind != ISSUE_FIELD_CONFLICT
+            or not all(
+                conflict.conflict_id in supplied_conflict_decisions
+                for conflict in issue.conflicts
+            )
+        ]
+        if blocking_issues:
+            raise DailyImportError(
+                "Còn dòng chưa được xử lý. Vui lòng xử lý hoặc bỏ qua tất cả trước khi nhập."
+            )
+        conflict_decisions = {
+            **analysis.conflict_decisions,
+            **supplied_conflict_decisions,
+        }
         daily_path = analysis.daily_path
         if file_utils.is_file_locked(daily_path):
             raise DailyImportError(
                 "File theo dõi hàng ngày đang mở. Vui lòng đóng Excel rồi thử lại."
+            )
+        current_daily_hash = file_utils.sha256_file(daily_path)
+        if analysis.daily_hash and current_daily_hash != analysis.daily_hash:
+            raise DailyImportError(
+                "File theo dõi hàng ngày đã thay đổi sau khi phân tích. "
+                "Vui lòng mở lại cửa sổ xử lý để chọn lại dòng đích."
+            )
+        current_source_hash = extract_payload_hash(load_extract_payload(analysis.output_path))
+        if analysis.source_hash and current_source_hash != analysis.source_hash:
+            raise DailyImportError(
+                "Dữ liệu bóc tách đã thay đổi sau khi phân tích. "
+                "Vui lòng mở lại cửa sổ xử lý trước khi nhập."
             )
         run_id = self.database.create_import_run(
             analysis.processed_file_id, analysis.output_path, daily_path
@@ -979,11 +1503,18 @@ class DailyImportService:
                     self._copy_row_style(
                         expense_ws, max(2, self._last_data_row(expense_ws)), row_number
                     )
+                conflict_by_field = {
+                    conflict.field_name: conflict for conflict in change.conflicts
+                }
                 for name, value in change.values.items():
                     if name not in expense_map:
                         continue
                     cell = expense_ws.cell(row_number, expense_map[name])
-                    if change.action == "CREATE" or cell.value in (None, "") or name in (
+                    conflict = conflict_by_field.get(name)
+                    if conflict:
+                        if conflict_decisions.get(conflict.conflict_id, False):
+                            cell.value = value
+                    elif change.action == "CREATE" or cell.value in (None, "") or name in (
                         "MD5",
                         "Nơi đóng",
                         "Ngày cập nhật",
@@ -1032,6 +1563,7 @@ class DailyImportService:
                     status,
                     note=self._summary_note(summary),
                 )
+            self.database.delete_import_resolution_draft(analysis.output_path)
             return summary
         except Exception as exc:
             # Ghi theo cơ chế file tạm + os.replace (nguyên tử) nên file theo dõi
@@ -1057,14 +1589,34 @@ class DailyImportService:
                 raise
             raise DailyImportError(f"Không cập nhật được file theo dõi: {exc}") from exc
 
+    def save_resolution_draft(
+        self,
+        output_path: str,
+        daily_path: str,
+        resolutions: Dict[str, IssueResolution],
+    ) -> None:
+        payload = load_extract_payload(output_path)
+        self.database.save_import_resolution_draft(
+            output_path,
+            extract_payload_hash(payload),
+            daily_path,
+            file_utils.sha256_file(daily_path),
+            {
+                issue_id: resolution.to_dict()
+                for issue_id, resolution in resolutions.items()
+            },
+        )
+
     # ------------------------------------------------------------------ #
     # Đọc dữ liệu
     # ------------------------------------------------------------------ #
-    def _read_output(self, path: str) -> List[ExtractedRow]:
+    def _read_output(
+        self, path: str, *, payload: Optional[Dict[str, Any]] = None
+    ) -> List[ExtractedRow]:
         if Path(path).suffix.lower() != ".json":
             raise DailyImportError("File bóc tách phải là định dạng JSON (.json).")
 
-        payload = load_extract_payload(path)
+        payload = payload or load_extract_payload(path)
         rows = payload.get("du_lieu_boc_tach") or []
 
         result: List[ExtractedRow] = []
@@ -1348,6 +1900,7 @@ class DailyImportService:
             "Ngày Đóng": excel_date(scale.close_date),
             "Số Container": scale.container,
             "Biển số xe": scale.truck_no or fallback.get("Biển số xe"),
+            "Số B/L": (bill.bill_no if bill else "") or fallback.get("Số B/L"),
             "Số chì/Seal": seal,
             "Số tấn": scale.tons,
             "Loại hàng": scale.cargo,
@@ -1375,6 +1928,7 @@ class DailyImportService:
             "Ngày Đóng": excel_date(bill.close_date) or fallback.get("Ngày Đóng"),
             "Số Container": bill.container or fallback.get("Số Container"),
             "Biển số xe": bill.truck_no or fallback.get("Biển số xe"),
+            "Số B/L": bill.bill_no or fallback.get("Số B/L"),
             "Số chì/Seal": bill.seal or fallback.get("Số chì/Seal"),
             "Số tấn": bill.tons if bill.tons is not None else fallback.get("Số tấn"),
             "Loại hàng": bill.cargo or fallback.get("Loại hàng"),
@@ -1407,8 +1961,16 @@ class DailyImportService:
             current = target.values.get(name)
             if name in ignored or current in (None, "") or new_value in (None, ""):
                 continue
-            current_compare = parse_date(current) or _key_text(current)
-            new_compare = parse_date(new_value) or _key_text(new_value)
+            both_numbers = all(
+                isinstance(value, (int, float)) and not isinstance(value, bool)
+                for value in (current, new_value)
+            )
+            if both_numbers:
+                current_compare = float(current)
+                new_compare = float(new_value)
+            else:
+                current_compare = parse_date(current) or _key_text(current)
+                new_compare = parse_date(new_value) or _key_text(new_value)
             if current_compare != new_compare:
                 raw_id = (
                     f"{target.sheet_name}|{target.row_number}|"
@@ -1432,6 +1994,7 @@ class DailyImportService:
         virtual_rows: Sequence[_TargetInfoRow],
         snapshot: _WorkbookSnapshot,
         analysis: ImportAnalysis,
+        requested_resolutions: Dict[str, IssueResolution],
     ) -> None:
         for expense in expenses:
             matches = [
@@ -1442,14 +2005,43 @@ class DailyImportService:
             ]
             sqt_values = {row.sqt for row in matches if row.sqt}
             if len(sqt_values) != 1:
-                # Khoản chi không có đúng một SQT thì không ghi vào sheet Khoan_Chi:
-                # ghi với SQT rỗng sẽ tạo dòng mồ côi không đối chiếu được.
-                self._mark_unmatched(
-                    analysis,
+                many = bool(sqt_values)
+                issue = self._row_issue(
+                    ISSUE_MULTIPLE_TARGETS if many else ISSUE_NO_TARGET,
+                    "Khớp nhiều dòng quyết toán" if many else "Không tìm thấy SQT",
+                    REASON_MANY_TARGETS if many else REASON_NO_TARGET,
                     expense,
-                    REASON_NO_TARGET if not sqt_values else REASON_MANY_TARGETS,
+                    candidates=(
+                        [self._target_candidate(row) for row in matches if row.sqt]
+                        if many
+                        else []
+                    ),
                 )
-                continue
+                resolution = self._register_issue(
+                    analysis, issue, requested_resolutions
+                )
+                if resolution is None:
+                    self._mark_unmatched(
+                        analysis,
+                        expense,
+                        REASON_MANY_TARGETS if many else REASON_NO_TARGET,
+                    )
+                    continue
+                if resolution.action == RESOLUTION_SKIP:
+                    continue
+                selected_candidate = next(
+                    item
+                    for item in issue.candidates
+                    if item.candidate_id == resolution.candidate_id
+                )
+                matches = [
+                    row
+                    for row in matches
+                    if row.sheet_name == selected_candidate.sheet_name
+                    and row.row_number == selected_candidate.row_number
+                    and row.sqt == selected_candidate.sqt
+                ]
+                sqt_values = {selected_candidate.sqt}
             sqt = next(iter(sqt_values))
             target = next((row for row in matches if row.sqt == sqt), None)
             target_values = target.values if target else {}
@@ -1493,6 +2085,28 @@ class DailyImportService:
                 ),
                 "Ngày cập nhật": datetime.now(),
             }
+            conflicts: List[FieldConflict] = []
+            if existing:
+                expense_target = _TargetInfoRow(
+                    sheet_name=EXPENSE_SHEET,
+                    row_number=existing[0],
+                    sqt=sqt,
+                    close_date=expense.close_date,
+                    container=expense.container,
+                    cargo="",
+                    values=existing[1],
+                )
+                conflicts = self._find_conflicts(expense_target, values)
+                analysis.conflicts.extend(conflicts)
+                if conflicts and not self._apply_conflict_issue(
+                    analysis,
+                    requested_resolutions,
+                    expense,
+                    [],
+                    conflicts,
+                    values,
+                ):
+                    continue
             analysis.expense_changes.append(
                 ExpenseChange(
                     action="UPDATE" if existing else "CREATE",
@@ -1501,6 +2115,7 @@ class DailyImportService:
                     staged_ids=[expense.staged_id],
                     document_md5s=[self._real_md5(expense)],
                     check_status=check_status,
+                    conflicts=conflicts,
                 )
             )
             analysis.pending_states[expense.staged_id] = (STATE_READY, "")
@@ -1539,7 +2154,7 @@ class DailyImportService:
         mapping = self._header_map(ws)
         auto_addable = {"Ngày nhập cuối", "Ngày cập nhật", "MD5", "Trạng thái nhập"}
         if info_sheet:
-            auto_addable.update({"Biển số xe", "Lô SX", "Dự kiến giao"})
+            auto_addable.update({"Biển số xe", "Số B/L", "Lô SX", "Dự kiến giao"})
         else:
             auto_addable.add("Nơi đóng")
         missing = [
@@ -1573,6 +2188,15 @@ class DailyImportService:
         if "Biển số xe" not in self._header_map(ws):
             if not self._use_blank_header(ws, "Biển số xe", before_header="Số chì/Seal"):
                 self._ensure_column(ws, "Biển số xe", before_header="Số chì/Seal")
+        if "Số B/L" not in self._header_map(ws):
+            if not self._use_blank_header(ws, "Số B/L", before_header="Số chì/Seal"):
+                if not self._use_empty_placeholder_header(
+                    ws,
+                    "Column1",
+                    "Số B/L",
+                    before_header="Số chì/Seal",
+                ):
+                    self._ensure_column(ws, "Số B/L", before_header="Số chì/Seal")
         if "Lô SX" not in self._header_map(ws):
             self._ensure_column(ws, "Lô SX", before_header="Số tấn")
         if "Dự kiến giao" not in self._header_map(ws):
@@ -1668,6 +2292,29 @@ class DailyImportService:
                 ws.cell(1, col).value = header
                 return True
         return False
+
+    def _use_empty_placeholder_header(
+        self,
+        ws,
+        placeholder: str,
+        header: str,
+        *,
+        before_header: str,
+    ) -> bool:
+        """Đổi tên cột giữ chỗ chỉ khi cột đó hoàn toàn chưa có dữ liệu."""
+        mapping = self._header_map(ws)
+        if before_header not in mapping:
+            return False
+        col = mapping[before_header] - 1
+        if col < 1 or _key_text(ws.cell(1, col).value) != _key_text(placeholder):
+            return False
+        if any(
+            ws.cell(row, col).value not in (None, "")
+            for row in range(2, ws.max_row + 1)
+        ):
+            return False
+        ws.cell(1, col).value = header
+        return True
 
     @staticmethod
     def _hide_columns(ws, headers: Iterable[str]) -> None:

@@ -18,6 +18,13 @@ from app.daily_import import (
     REASON_MANY_TARGETS,
     REASON_NO_MONTH,
     REASON_NO_TARGET,
+    ISSUE_MULTIPLE_BILLS,
+    ISSUE_MULTIPLE_TARGETS,
+    ISSUE_FIELD_CONFLICT,
+    IssueResolution,
+    RESOLUTION_FIELDS,
+    RESOLUTION_SELECT,
+    RESOLUTION_SKIP,
     DailyImportError,
     DailyImportService,
     normalize_cargo,
@@ -26,7 +33,7 @@ from app.daily_import import (
 from app.database import Database
 
 
-LEGACY_INFO_HEADERS = list(INFO_HEADERS)
+LEGACY_INFO_HEADERS = [name for name in INFO_HEADERS if name != "Số B/L"]
 LEGACY_EXPENSE_HEADERS = [name for name in EXPENSE_HEADERS if name != "Nơi đóng"]
 
 
@@ -207,13 +214,14 @@ class DailyImportServiceTests(unittest.TestCase):
         self.assertEqual(normalize_cargo("VOI ROI")[0], "Vôi rời")
         self.assertEqual(normalize_cargo("Vôi cục C2 xá rời")[0], "Vôi cục C2 xá rời")
 
-    def test_end_to_end_upgrade_match_and_deduplicate(self) -> None:
+    def test_end_to_end_upgrade_match_and_reimport(self) -> None:
         self._make_output()
         analysis = self.service.analyze(str(self.output), str(self.daily), 1)
         self.assertEqual(analysis.extracted_rows, 3)
         self.assertEqual(analysis.new_info_count, 1)
         self.assertEqual(len(analysis.expense_changes), 1)
         self.assertEqual(analysis.expense_changes[0].values["SQT PM"], 101)
+        self.assertEqual(analysis.info_changes[0].values["Số B/L"], "BILL-03")
 
         summary = self.service.commit(analysis)
         self.assertEqual(summary.new_info, 1)
@@ -234,6 +242,7 @@ class DailyImportServiceTests(unittest.TestCase):
         headers = {cell.value: cell.column for cell in info[1]}
         self.assertEqual(info.cell(2, headers["Trạng thái nhập"]).value, "Đã nhập")
         self.assertEqual(info.cell(4, headers["SQT PM"]).value, 102)
+        self.assertEqual(info.cell(4, headers["Số B/L"]).value, "BILL-03")
         self.assertEqual(info.cell(4, headers["Loại hàng"]).value, "Vôi rời")
         self.assertEqual(info.cell(4, headers["Người nhận"]).value, "LÊ PHẠM")
         self.assertEqual(info.cell(4, headers["Trạng thái nhập"]).value, "Chưa nhập")
@@ -242,31 +251,35 @@ class DailyImportServiceTests(unittest.TestCase):
 
         again = self.service.analyze(str(self.output), str(self.daily), 1)
         self.assertEqual(again.new_info_count, 0)
-        self.assertEqual(len(again.expense_changes), 0)
-        self.assertEqual(again.duplicate_documents, 3)
+        self.assertEqual(again.updated_info_count, 1)
+        self.assertEqual(len(again.expense_changes), 1)
+        self.assertEqual(again.expense_changes[0].action, "UPDATE")
+        self.assertEqual(again.duplicate_documents, 0)
 
-    def test_reimport_after_deleting_rows_from_daily(self) -> None:
-        """File theo dõi là sổ cái: xóa dòng khỏi Excel thì nhập lại được ngay.
-
-        Trước đây “đã nhập” chỉ nằm trong SQLite nên xóa dòng khỏi Excel xong nhập
-        lại vẫn bị báo “đã nhập rồi”, phải xóa app_state.db mới nhập lại được.
-        """
+    def test_reimport_is_allowed_while_rows_remain_in_daily(self) -> None:
+        """Dòng đã hoàn tất vẫn được phân tích lại để cập nhật Excel."""
         self._make_output()
         self.service.commit(self.service.analyze(str(self.output), str(self.daily), 1))
 
-        # Chưa xóa gì: chứng từ đã có MD5 trong file theo dõi -> bỏ qua.
+        # MD5 vẫn còn trong Excel và DB vẫn ghi COMPLETED nhưng không chặn nhập lại.
         again = self.service.analyze(str(self.output), str(self.daily), 1)
-        self.assertEqual(again.duplicate_documents, 3)
-        self.assertFalse(again.has_changes)
+        self.assertEqual(again.duplicate_documents, 0)
+        self.assertTrue(again.has_changes)
+        self.assertEqual(again.updated_info_count, 1)
+        self.assertEqual(len(again.expense_changes), 1)
+        self.assertEqual(again.expense_changes[0].action, "UPDATE")
 
-        # Người dùng xóa các dòng app vừa ghi khỏi file theo dõi.
+        summary = self.service.commit(again)
+        self.assertEqual(summary.updated_info, 1)
+        self.assertEqual(summary.updated_expenses, 1)
+
+        # Nếu người dùng xóa dòng khỏi Excel thì lần tiếp theo sẽ tạo lại dòng.
         wb = load_workbook(self.daily)
         wb[INFO_SHEET].delete_rows(4)  # dòng quyết toán mới (Phiếu cân + Bill)
         wb[EXPENSE_SHEET].delete_rows(2)  # dòng khoản chi
         wb.save(self.daily)
         wb.close()
 
-        # MD5 không còn trong Excel -> nhập lại được, không phải đụng vào database.
         third = self.service.analyze(str(self.output), str(self.daily), 1)
         self.assertEqual(third.duplicate_documents, 0)
         self.assertEqual(third.new_info_count, 1)
@@ -310,15 +323,19 @@ class DailyImportServiceTests(unittest.TestCase):
         self.service.commit(second)
         self.assertEqual(self._expense_sqt_column(), [101])
 
-        # Tải lại đúng file JSON đó: dòng đã ghi bị bỏ qua, hai dòng kia vẫn được
-        # xét lại chứ không bị "ăn theo" MD5 của dòng đã ghi.
+        # Tải lại đúng file JSON đó: dòng đã ghi được phép cập nhật lại, hai dòng
+        # chưa ghép được vẫn tiếp tục được xét độc lập.
         self._write_output_rows(
             {**shared, "so_container": "EFGH1234567", "tong_tien": 1_000_000},
             {**shared, "so_container": "AAAA1111111", "tong_tien": 2_000_000},
             {**shared, "so_container": "BBBB2222222", "tong_tien": 3_000_000},
         )
         third = self.service.analyze(str(self.output), str(self.daily), 1)
-        self.assertEqual(third.expense_changes, [])
+        self.assertEqual(len(third.expense_changes), 1)
+        self.assertEqual(third.expense_changes[0].action, "UPDATE")
+        self.assertEqual(
+            third.expense_changes[0].values["Số Container"], "EFGH1234567"
+        )
         self.assertEqual(
             sorted(row.container for row in third.unmatched_rows),
             ["AAAA1111111", "BBBB2222222"],
@@ -331,6 +348,7 @@ class DailyImportServiceTests(unittest.TestCase):
                 "ma_md5_file": "waiting-bill",
                 "loai_chung_tu": "Bill",
                 "so_container": "MNOP1234567",
+                "so_bill": "BL-WAITING-01",
                 "ten_tau": "TÀU CHỜ 01S",
                 "ngay_chay": "10/06/2026",
                 "vt_bien": "Hãng chờ",
@@ -340,11 +358,124 @@ class DailyImportServiceTests(unittest.TestCase):
         analysis = self.service.analyze(str(self.output), str(self.daily), 1)
         self.assertEqual(analysis.new_info_count, 1)
         self.assertEqual(analysis.info_changes[0].values["Số Container"], "MNOP1234567")
+        self.assertEqual(analysis.info_changes[0].values["Số B/L"], "BL-WAITING-01")
         self.assertEqual(analysis.info_changes[0].values["Tên tàu"], "TÀU CHỜ 01S")
 
         summary = self.service.commit(analysis)
         self.assertEqual(summary.new_info, 1)
         self.assertEqual(summary.pending_count, 0)
+
+        wb = load_workbook(self.daily, data_only=True)
+        ws = wb[INFO_SHEET]
+        headers = {cell.value: cell.column for cell in ws[1] if cell.value}
+        self.assertEqual(ws.cell(ws.max_row, headers["Số B/L"]).value, "BL-WAITING-01")
+        wb.close()
+
+    def test_bill_number_conflict_uses_alias_and_can_select_new_value(self) -> None:
+        wb = load_workbook(self.daily)
+        ws = wb[INFO_SHEET]
+        bill_col = ws.max_column + 1
+        ws.cell(1, bill_col).value = "B/L"
+        ws.cell(2, bill_col).value = "BL-OLD"
+        wb.save(self.daily)
+        wb.close()
+
+        self._write_output_rows(
+            {
+                "file_nguon": "scale-existing.jpg",
+                "ma_md5_file": "scale-existing",
+                "loai_chung_tu": "Phiếu cân",
+                "ngay_dong": "01/06/2026",
+                "so_container": "ABCD1234567",
+                "so_tan": 28,
+                "loai_hang": "Vôi rời",
+                "noi_dong": "Kho A",
+            },
+            {
+                "file_nguon": "bill-new.pdf",
+                "ma_md5_file": "bill-new",
+                "loai_chung_tu": "Bill",
+                "so_container": "ABCD1234567",
+                "so_bill": "BL-NEW",
+                "ten_tau": "TÀU CŨ 01S",
+                "ngay_chay": "02/06/2026",
+                "vt_bien": "Hãng A",
+            },
+        )
+
+        first = self.service.analyze(str(self.output), str(self.daily), 1)
+        issue = next(item for item in first.issues if item.kind == ISSUE_FIELD_CONFLICT)
+        bill_conflict = next(
+            conflict for conflict in issue.conflicts if conflict.field_name == "Số B/L"
+        )
+        self.assertEqual(bill_conflict.current_value, "BL-OLD")
+        self.assertEqual(bill_conflict.new_value, "BL-NEW")
+
+        resolution = IssueResolution(
+            issue.issue_id,
+            RESOLUTION_FIELDS,
+            field_choices={
+                conflict.conflict_id: {
+                    "mode": "NEW" if conflict.field_name == "Số B/L" else "CURRENT",
+                    "value": "",
+                }
+                for conflict in issue.conflicts
+            },
+        )
+        resolved = self.service.analyze(
+            str(self.output),
+            str(self.daily),
+            1,
+            resolutions={issue.issue_id: resolution},
+        )
+        self.assertEqual(resolved.unresolved_issues, [])
+        self.service.commit(resolved)
+
+        wb = load_workbook(self.daily, data_only=True)
+        ws = wb[INFO_SHEET]
+        headers = {cell.value: cell.column for cell in ws[1] if cell.value}
+        self.assertIn("Số B/L", headers)
+        self.assertNotIn("B/L", headers)
+        self.assertEqual(ws.cell(2, headers["Số B/L"]).value, "BL-NEW")
+        wb.close()
+
+    def test_scale_without_bill_keeps_existing_bill_number(self) -> None:
+        wb = load_workbook(self.daily)
+        ws = wb[INFO_SHEET]
+        bill_col = ws.max_column + 1
+        ws.cell(1, bill_col).value = "Số Bill"
+        ws.cell(2, bill_col).value = "BL-KEEP"
+        wb.save(self.daily)
+        wb.close()
+
+        self._write_output_rows(
+            {
+                "file_nguon": "scale-only.jpg",
+                "ma_md5_file": "scale-only",
+                "loai_chung_tu": "Phiếu cân",
+                "ngay_dong": "01/06/2026",
+                "so_container": "ABCD1234567",
+                "so_tan": 28,
+                "loai_hang": "Vôi rời",
+                "noi_dong": "Kho A",
+            }
+        )
+
+        analysis = self.service.analyze(str(self.output), str(self.daily), 1)
+        self.assertEqual(analysis.info_changes[0].values["Số B/L"], "BL-KEEP")
+        self.assertFalse(
+            any(
+                conflict.field_name == "Số B/L"
+                for conflict in analysis.info_changes[0].conflicts
+            )
+        )
+        self.service.commit(analysis)
+
+        wb = load_workbook(self.daily, data_only=True)
+        ws = wb[INFO_SHEET]
+        headers = {cell.value: cell.column for cell in ws[1] if cell.value}
+        self.assertEqual(ws.cell(2, headers["Số B/L"]).value, "BL-KEEP")
+        wb.close()
 
     def test_invalid_json_schema_is_reported(self) -> None:
         with open(self.output, "w", encoding="utf-8") as f:
@@ -354,7 +485,7 @@ class DailyImportServiceTests(unittest.TestCase):
             self.service.analyze(str(self.output), str(self.daily), 1)
         self.assertIn("du_lieu_boc_tach", str(ctx.exception))
 
-    def test_multiple_bills_are_unmatched_and_can_be_dropped(self) -> None:
+    def test_multiple_bills_can_be_selected_without_deleting_json(self) -> None:
         rows = [
             {
                 "file_nguon": "scale.jpg",
@@ -386,7 +517,7 @@ class DailyImportServiceTests(unittest.TestCase):
             )
         self._write_output_rows(*rows)
 
-        # Container khớp nhiều Bill -> không tự đoán, không hỏi chọn tay.
+        # Container khớp nhiều Bill -> trả về ứng viên để người dùng chọn.
         first = self.service.analyze(str(self.output), str(self.daily), 1)
         self.assertEqual(first.info_changes, [])
         self.assertEqual(len(first.unmatched_rows), 3)
@@ -396,22 +527,39 @@ class DailyImportServiceTests(unittest.TestCase):
         self.assertEqual(
             sorted(row.json_index for row in first.unmatched_rows), [0, 1, 2]
         )
-        # Dòng lỗi không nằm lại hàng chờ để bắt người dùng xử lý sau.
-        self.assertEqual(self.db.count_pending_rows(), 0)
+        self.assertEqual(self.db.count_pending_rows(), 3)
+        self.assertEqual(len(first.issues), 1)
+        issue = first.issues[0]
+        self.assertEqual(issue.kind, ISSUE_MULTIPLE_BILLS)
+        self.assertEqual(len(issue.candidates), 2)
 
-        # Người dùng chọn “Hủy các dòng lỗi và nhập các dòng còn lại”.
-        removed = remove_extract_rows(
-            str(self.output), [row.json_index for row in first.unmatched_rows]
+        # Chọn Bill B; Bill A được giữ lại ở trạng thái chờ, không xóa JSON.
+        bill_b = next(
+            item for item in issue.candidates if item.values.get("Số B/L") == "BILL-B"
         )
-        self.assertEqual(removed, 3)
-
-        second = self.service.analyze(str(self.output), str(self.daily), 1)
-        self.assertEqual(second.unmatched_rows, [])
-        self.assertFalse(second.has_changes)
+        second = self.service.analyze(
+            str(self.output),
+            str(self.daily),
+            1,
+            resolutions={
+                issue.issue_id: IssueResolution(
+                    issue.issue_id,
+                    RESOLUTION_SELECT,
+                    candidate_id=bill_b.candidate_id,
+                )
+            },
+        )
+        self.assertEqual(second.unresolved_issues, [])
+        self.assertEqual(second.info_changes[0].values["Tên tàu"], "TÀU B 02S")
+        summary = self.service.commit(second)
+        self.assertEqual(summary.status, "DAILY_IMPORT_PARTIAL")
+        self.assertGreater(summary.pending_count, 0)
         with open(self.output, encoding="utf-8") as f:
             payload = json.load(f)
-        self.assertEqual(payload["du_lieu_boc_tach"], [])
-        self.assertEqual(payload["metadata"]["tong_so_dong_boc_tach"], 0)
+        self.assertEqual(len(payload["du_lieu_boc_tach"]), 3)
+        retry = self.service.analyze(str(self.output), str(self.daily), 1)
+        self.assertEqual(retry.info_changes, [])
+        self.assertEqual(retry.issues[0].kind, ISSUE_MULTIPLE_BILLS)
 
     def test_expense_matches_by_date_and_container_without_invoice(self) -> None:
         self._write_output_rows(
@@ -612,10 +760,21 @@ class DailyImportServiceTests(unittest.TestCase):
         self.assertEqual(unmatched.reference, "HĐ 77")
         self.assertEqual(unmatched.reason, REASON_NO_TARGET)
         self.assertEqual(unmatched.json_index, 0)
-        self.assertEqual(self.db.count_pending_rows(), 0)
-
-        self.service.commit(analysis)
+        self.assertEqual(self.db.count_pending_rows(), 1)
+        issue = analysis.issues[0]
+        skipped = self.service.analyze(
+            str(self.output),
+            str(self.daily),
+            1,
+            resolutions={
+                issue.issue_id: IssueResolution(issue.issue_id, RESOLUTION_SKIP)
+            },
+        )
+        summary = self.service.commit(skipped)
+        self.assertEqual(summary.status, "DAILY_IMPORT_PARTIAL")
         self.assertEqual(self._expense_sqt_column(), [])
+        with open(self.output, encoding="utf-8") as f:
+            self.assertEqual(len(json.load(f)["du_lieu_boc_tach"]), 1)
 
     def test_expense_matching_multiple_sqt_is_not_written(self) -> None:
         # Cùng container + cùng ngày nhưng hai dòng quyết toán -> không rõ SQT nào.
@@ -638,11 +797,35 @@ class DailyImportServiceTests(unittest.TestCase):
         self.assertEqual(len(analysis.unmatched_rows), 1)
         self.assertEqual(analysis.unmatched_rows[0].reason, REASON_MANY_TARGETS)
 
-        self.service.commit(analysis)
-        self.assertEqual(self._expense_sqt_column(), [])
+        issue = analysis.issues[0]
+        self.assertEqual(issue.kind, ISSUE_MULTIPLE_TARGETS)
+        self.assertEqual(len(issue.candidates), 2)
+        selected = next(item for item in issue.candidates if item.sqt == 300)
+        resolved = self.service.analyze(
+            str(self.output),
+            str(self.daily),
+            1,
+            resolutions={
+                issue.issue_id: IssueResolution(
+                    issue.issue_id,
+                    RESOLUTION_SELECT,
+                    candidate_id=selected.candidate_id,
+                )
+            },
+        )
+        self.assertEqual(resolved.unresolved_issues, [])
+        self.service.commit(resolved)
+        self.assertEqual(self._expense_sqt_column(), [300])
 
     def test_monthly_workbook_creates_next_month_sheet_and_global_sqt(self) -> None:
         self._make_monthly_daily()
+        wb = load_workbook(self.daily)
+        ws = wb["Tháng 7"]
+        ws["D1"] = "Biển số xe"
+        ws.insert_cols(5, 1)
+        ws["E1"] = "Column1"
+        wb.save(self.daily)
+        wb.close()
         self._write_output_rows(
             {
                 "file_nguon": "scale-aug.jpg",
@@ -671,6 +854,8 @@ class DailyImportServiceTests(unittest.TestCase):
         self.assertIn(EXPENSE_SHEET, wb.sheetnames)
         ws = wb["Tháng 8"]
         headers = {cell.value: cell.column for cell in ws[1] if cell.value}
+        self.assertIn("Số B/L", headers)
+        self.assertNotIn("Column1", headers)
         self.assertIn("Số chì/Seal", headers)
         self.assertIn("Hóa Đơn quyết toán", headers)
         self.assertEqual(ws.cell(2, headers["SQT PM"]).value, 717)
@@ -680,6 +865,25 @@ class DailyImportServiceTests(unittest.TestCase):
                 ws.cell(1, headers["MD5"]).column_letter
             ].hidden
         )
+        wb.close()
+
+    def test_non_empty_column1_is_preserved_when_bill_column_is_added(self) -> None:
+        self._make_monthly_daily()
+        wb = load_workbook(self.daily)
+        ws = wb["Tháng 7"]
+        ws["D1"] = "Biển số xe"
+        ws.insert_cols(5, 1)
+        ws["E1"] = "Column1"
+        ws["E2"] = "Dữ liệu cũ"
+
+        self.service._upgrade_workbook(wb)
+
+        headers = {cell.value: cell.column for cell in ws[1] if cell.value}
+        self.assertIn("Column1", headers)
+        self.assertIn("Số B/L", headers)
+        self.assertNotEqual(headers["Column1"], headers["Số B/L"])
+        self.assertEqual(ws.cell(2, headers["Column1"]).value, "Dữ liệu cũ")
+        self.assertLess(headers["Số B/L"], headers["Số chì/Seal"])
         wb.close()
 
     def test_monthly_workbook_missing_close_date_is_unmatched(self) -> None:
@@ -700,6 +904,126 @@ class DailyImportServiceTests(unittest.TestCase):
         self.assertEqual(analysis.info_changes, [])
         self.assertEqual(len(analysis.unmatched_rows), 1)
         self.assertEqual(analysis.unmatched_rows[0].reason, REASON_NO_MONTH)
+
+    def test_field_conflicts_are_resolved_inside_analysis(self) -> None:
+        self._write_output_rows(
+            {
+                "file_nguon": "scale-conflict.jpg",
+                "ma_md5_file": "scale-conflict",
+                "loai_chung_tu": "Phiếu cân",
+                "ngay_dong": "01/06/2026",
+                "so_container": "ABCD1234567",
+                "so_tan": 31.5,
+                "loai_hang": "VOI BOT",
+                "noi_dong": "Kho mới",
+            }
+        )
+        first = self.service.analyze(str(self.output), str(self.daily), 1)
+        issue = next(item for item in first.issues if item.kind == ISSUE_FIELD_CONFLICT)
+        resolution = IssueResolution(
+            issue.issue_id,
+            RESOLUTION_FIELDS,
+            field_choices={
+                conflict.conflict_id: {"mode": "NEW", "value": ""}
+                for conflict in issue.conflicts
+            },
+        )
+        resolved = self.service.analyze(
+            str(self.output),
+            str(self.daily),
+            1,
+            resolutions={issue.issue_id: resolution},
+        )
+        self.assertEqual(resolved.unresolved_issues, [])
+        self.service.commit(resolved)
+        wb = load_workbook(self.daily, data_only=True)
+        ws = wb[INFO_SHEET]
+        headers = {cell.value: cell.column for cell in ws[1] if cell.value}
+        self.assertEqual(ws.cell(2, headers["Số tấn"]).value, 31.5)
+        self.assertEqual(ws.cell(2, headers["Nơi đóng"]).value, "Kho mới")
+        wb.close()
+
+    def test_resolution_draft_restores_only_while_files_are_unchanged(self) -> None:
+        self._append_info_row(300, datetime(2026, 6, 3), "EFGH1234567", 27)
+        self._write_output_rows(
+            {
+                "file_nguon": "cost-draft.jpg",
+                "ma_md5_file": "cost-draft",
+                "loai_chung_tu": "Khoản chi",
+                "ngay_chay": "03/06/2026",
+                "so_container": "EFGH1234567",
+                "so_hd": "DRAFT",
+                "tong_tien": 1000,
+            }
+        )
+        first = self.service.analyze(str(self.output), str(self.daily), 1)
+        issue = first.issues[0]
+        candidate = next(item for item in issue.candidates if item.sqt == 300)
+        resolved = self.service.analyze(
+            str(self.output),
+            str(self.daily),
+            1,
+            resolutions={
+                issue.issue_id: IssueResolution(
+                    issue.issue_id,
+                    RESOLUTION_SELECT,
+                    candidate_id=candidate.candidate_id,
+                )
+            },
+        )
+        self.service.save_resolution_draft(
+            str(self.output), str(self.daily), resolved.resolutions
+        )
+
+        restored = self.service.analyze(str(self.output), str(self.daily), 1)
+        self.assertEqual(restored.unresolved_issues, [])
+        self.assertIn(issue.issue_id, restored.resolutions)
+
+        wb = load_workbook(self.daily)
+        wb[INFO_SHEET]["A1"] = "SQT PM "
+        wb.save(self.daily)
+        wb.close()
+        invalidated = self.service.analyze(str(self.output), str(self.daily), 1)
+        self.assertTrue(invalidated.unresolved_issues)
+
+    def test_commit_rejects_changed_workbook(self) -> None:
+        self._write_output_rows(
+            {
+                "file_nguon": "scale-stale.jpg",
+                "ma_md5_file": "scale-stale",
+                "loai_chung_tu": "Phiếu cân",
+                "ngay_dong": "05/06/2026",
+                "so_container": "STAL1234567",
+                "so_tan": 20,
+            }
+        )
+        analysis = self.service.analyze(str(self.output), str(self.daily), 1)
+        wb = load_workbook(self.daily)
+        wb[INFO_SHEET]["Z1"] = "Thay đổi ngoài"
+        wb.save(self.daily)
+        wb.close()
+        with self.assertRaisesRegex(DailyImportError, "đã thay đổi"):
+            self.service.commit(analysis)
+
+    def test_commit_rejects_changed_extract_json(self) -> None:
+        self._write_output_rows(
+            {
+                "file_nguon": "scale-source-stale.jpg",
+                "ma_md5_file": "scale-source-stale",
+                "loai_chung_tu": "Phiếu cân",
+                "ngay_dong": "05/06/2026",
+                "so_container": "JSON1234567",
+                "so_tan": 20,
+            }
+        )
+        analysis = self.service.analyze(str(self.output), str(self.daily), 1)
+        payload = json.loads(self.output.read_text(encoding="utf-8"))
+        payload["du_lieu_boc_tach"][0]["so_tan"] = 25
+        self.output.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(DailyImportError, "đã thay đổi"):
+            self.service.commit(analysis)
 
     def test_expense_matches_info_from_monthly_sheets(self) -> None:
         self._make_monthly_daily()

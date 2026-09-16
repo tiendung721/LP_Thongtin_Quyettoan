@@ -9,12 +9,10 @@ from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QTabWidget,
@@ -22,6 +20,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .base_dialog import ResizableDialog
+from .notifications import notify
 from ..services.sqt_selection_service import (
     EXPENSE_SELECTION_OPERATION,
     SELECTION_OPERATION,
@@ -66,7 +66,7 @@ class _SqtChoiceRow(QFrame):
             layout.addWidget(detail)
 
 
-class SelectSqtDialog(QDialog):
+class SelectSqtDialog(ResizableDialog):
     """Select SQT values from separate pending and imported display flows."""
 
     def __init__(
@@ -304,7 +304,7 @@ class SelectSqtDialog(QDialog):
     def _on_run(self) -> None:
         selected_items = self.selected_items()
         if not selected_items:
-            QMessageBox.warning(
+            notify.warning(
                 self,
                 "Chưa chọn SQT",
                 "Vui lòng chọn ít nhất một Số quyết toán.",
@@ -321,16 +321,17 @@ class SelectSqtDialog(QDialog):
                 details.append(
                     f"{partial} SQT mới nhập một phần sẽ được xử lý lại toàn bộ"
                 )
-            answer = QMessageBox.question(
+            confirmed = notify.confirm(
                 self,
                 "Xác nhận nhập lại",
                 "Bạn đang chọn:\n• "
                 + "\n• ".join(details)
                 + "\n\nBạn có muốn tiếp tục?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+                confirm_text="Tiếp tục nhập lại",
+                cancel_text="Quay lại kiểm tra",
+                tone="warning",
             )
-            if answer != QMessageBox.Yes:
+            if not confirmed:
                 return
 
         self._selected_items = selected_items

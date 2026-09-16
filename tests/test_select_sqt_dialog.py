@@ -7,7 +7,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
+    from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 except ModuleNotFoundError:  # pragma: no cover - depends on local GUI deps
     raise unittest.SkipTest("PySide6 is not installed in this test environment")
 
@@ -49,7 +49,7 @@ class SelectSqtDialogTests(unittest.TestCase):
     def test_run_without_selection_warns_and_keeps_dialog_open(self) -> None:
         dialog = SelectSqtDialog(self.items)
 
-        with patch.object(QMessageBox, "warning") as warning:
+        with patch("app.dialogs.select_sqt_dialog.notify.warning") as warning:
             dialog._on_run()
 
         warning.assert_called_once()
@@ -103,12 +103,14 @@ class SelectSqtDialogTests(unittest.TestCase):
         dialog = SelectSqtDialog([item])
         dialog.checkboxes[0].setChecked(True)
 
-        with patch.object(QMessageBox, "question", return_value=QMessageBox.No) as question:
+        with patch(
+            "app.dialogs.select_sqt_dialog.notify.confirm", return_value=False
+        ) as question:
             dialog._on_run()
         question.assert_called_once()
         self.assertEqual(dialog.result(), QDialog.Rejected)
 
-        with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+        with patch("app.dialogs.select_sqt_dialog.notify.confirm", return_value=True):
             dialog._on_run()
         self.assertEqual(dialog.result(), QDialog.Accepted)
 

@@ -107,6 +107,10 @@ QPushButton[variant="success"]:hover { background: #15803D; }
 QPushButton[variant="success"]:pressed { background: #166534; }
 QPushButton[variant="success"]:disabled { background: #BBF7D0; color: #F8FAFC; }
 
+QPushButton[variant="danger"] { background: #DC2626; color: #FFFFFF; border: none; }
+QPushButton[variant="danger"]:hover { background: #B91C1C; }
+QPushButton[variant="danger"]:pressed { background: #991B1B; }
+
 /* Nút hành động chính của mỗi bước: cỡ vừa, không kéo giãn hết thẻ. */
 QPushButton#actionButton {
     min-height: 20px; font-size: 10.5pt; font-weight: 600; padding: 9px 20px;
@@ -195,6 +199,40 @@ QScrollBar::handle:vertical { background: #CBD1DA; border-radius: 5px; min-heigh
 QScrollBar::handle:vertical:hover { background: #AEB6C2; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+
+/* ---------- Hộp thông báo của ứng dụng ---------- */
+QDialog#notificationDialog { background: #FFFFFF; }
+QFrame#notificationAccent { border: none; background: #2563EB; }
+QFrame#notificationAccent[tone="success"] { background: #16A34A; }
+QFrame#notificationAccent[tone="warning"] { background: #F59E0B; }
+QFrame#notificationAccent[tone="error"] { background: #DC2626; }
+QFrame#notificationAccent[tone="question"] { background: #2563EB; }
+QLabel#notificationTitle { color: #111827; font-size: 14pt; font-weight: 700; }
+QLabel#notificationMessage { color: #374151; font-size: 10.5pt; line-height: 1.4; }
+QLabel#notificationContext { color: #6B7280; font-size: 9pt; }
+QFrame#notificationNotice {
+    background: #FFFBEB; border: 1px solid #FDE68A; border-radius: 8px;
+}
+QLabel#notificationNoticeText { color: #92400E; }
+QFrame#notificationMetric {
+    background: #F8FAFC; border: 1px solid #E5E7EB; border-radius: 8px;
+}
+QFrame#notificationMetric[tone="success"] { background: #F0FDF4; border-color: #BBF7D0; }
+QFrame#notificationMetric[tone="warning"] { background: #FFFBEB; border-color: #FDE68A; }
+QFrame#notificationMetric[tone="error"] { background: #FEF2F2; border-color: #FECACA; }
+QLabel#notificationMetricValue { color: #1D4ED8; font-size: 15pt; font-weight: 700; }
+QLabel#notificationMetricValue[tone="success"] { color: #15803D; }
+QLabel#notificationMetricValue[tone="warning"] { color: #B45309; }
+QLabel#notificationMetricValue[tone="error"] { color: #B91C1C; }
+QLabel#notificationMetricLabel { color: #64748B; font-size: 8.5pt; }
+QToolButton#notificationDetailsToggle {
+    background: transparent; border: none; color: #475569; padding: 3px 0;
+    font-weight: 600;
+}
+QToolButton#notificationDetailsToggle:hover { color: #2563EB; }
+QFrame#notificationDetails {
+    background: #F8FAFC; border: 1px solid #E5E7EB; border-radius: 8px;
+}
 """
 
 

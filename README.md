@@ -129,15 +129,15 @@ Mọi thao tác hằng ngày nằm ở tab **Chức năng**, theo 4 bước, m�
    kèm lý do**.
 3. **Bước 3 — Nhập lên file hàng ngày.** Phần mềm đọc thẳng file JSON bạn vừa xem
    ở Bước 2, tự ghép Phiếu cân với Bill theo container, tạo/cập nhật SQT PM và
-   ghép khoản chi theo Ngày tháng + Container.
-   - Chứng từ đã xử lý được nhận diện bằng MD5 và không bị nhập trùng.
-   - **Dòng không ghép được thì không nhập** (khoản chi không tìm ra đúng một SQT
-     PM, container khớp nhiều dòng quyết toán, hoặc container có nhiều Bill).
-     Phần mềm hiện popup **“Có dòng chưa nhập được”** với đúng hai lựa chọn:
-     **Quay lại bước 2 để kiểm tra** (không nhập gì thêm, mở lại bảng với dòng lỗi
-     được tô đỏ), hoặc **Hủy các dòng lỗi và nhập các dòng còn lại** (xóa hẳn dòng
-     lỗi khỏi file tạm, các dòng đạt vẫn được nhập trong cùng đợt).
-   - Nhập xong sạch lỗi, file JSON tạm được dọn đi.
+   ghi Số B/L của Bill đã chọn, đồng thời ghép khoản chi theo Ngày tháng + Container.
+   - Các dòng đã xử lý vẫn được phép nhập lại. Phần mềm ghép với dữ liệu hiện có
+     trong Excel để cập nhật dòng phù hợp hoặc tạo dòng mới khi cần.
+   - Nếu có dòng không ghép được, khớp nhiều SQT/Bill hoặc khác dữ liệu Excel,
+     phần mềm mở cửa sổ **“Xử lý dữ liệu trước khi nhập”**. Bạn có thể sửa ngay
+     dữ liệu bóc tách, chọn đúng dòng đích hoặc bỏ qua dòng đó trong lần nhập hiện tại.
+   - Excel chỉ được ghi sau khi mọi vấn đề đã có quyết định và người dùng xác nhận.
+     Dòng bỏ qua không bị xóa khỏi JSON; lô được giữ ở trạng thái nhập một phần để
+     tiếp tục xử lý sau. Nhập xong sạch lỗi thì file JSON tạm mới được dọn đi.
 4. **Bước 4 — Nhập dữ liệu mới lên phần mềm quyết toán.** Bấm nút, xác nhận, phần
    mềm chạy file `.bat` khởi động luồng **PAD RPA**. Trong lúc RPA chạy, không
    dùng chuột/bàn phím và không mở phần mềm quyết toán bằng tay.

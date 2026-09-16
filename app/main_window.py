@@ -33,7 +33,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
-    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -49,14 +48,15 @@ from PySide6.QtWidgets import (
 from . import file_utils
 from .config import AppConfig
 from .daily_import import EXPENSE_SHEET, INFO_SHEET, DailyImportError, ImportAnalysis, ImportSummary
-from .daily_import import DailyImportService, remove_extract_rows
+from .daily_import import DailyImportService
 from .daily_import_ui import (
-    ConflictDialog,
     FunctionWorker,
+    ImportResolutionDialog,
     JsonExtractDialog,
-    UnmatchedRowsDialog,
 )
 from .database import Database
+from .dialogs.base_dialog import enable_standard_window_controls
+from .dialogs.notifications import NotificationMetric, notify
 from .dialogs.select_sqt_dialog import SelectSqtDialog
 from .services.assistant_browser import (
     AssistantBrowserError,
@@ -137,6 +137,7 @@ class _QtLogHandler(logging.Handler):
 class MainWindow(QMainWindow):
     def __init__(self, config: AppConfig, database: Database, logger: logging.Logger):
         super().__init__()
+        enable_standard_window_controls(self)
         self.config = config
         self.database = database
         self.logger = logger
@@ -553,9 +554,9 @@ class MainWindow(QMainWindow):
         )
         guide3.addWidget(self._guide_label(
             "Phần mềm đọc thẳng file JSON bạn vừa xem ở Bước 2, ghép Phiếu cân, Bill "
-            "và khoản chi rồi cập nhật file theo dõi hàng ngày. Dòng nào không ghép "
-            "được sẽ không nhập: bạn chọn quay lại Bước 2 để sửa, hoặc bỏ các dòng "
-            "đó và vẫn nhập phần còn lại."
+            "và khoản chi rồi cập nhật file theo dõi hàng ngày. Nếu có dòng chưa rõ, "
+            "một cửa sổ xử lý sẽ cho phép sửa dữ liệu, chọn đúng dòng Excel/Bill hoặc "
+            "bỏ qua trong lần nhập này. Excel chỉ thay đổi sau khi bạn xác nhận cuối."
         ))
         self.lbl_daily_status = QLabel("Chưa nhập dữ liệu vào file theo dõi.")
         self.lbl_daily_status.setObjectName("hintText")
@@ -865,13 +866,18 @@ class MainWindow(QMainWindow):
         self.txt_log.appendPlainText(text)
 
     def show_error(self, title: str, message: str) -> None:
-        QMessageBox.critical(self, title, message)
+        marker = "\nChi tiết:"
+        if marker in message:
+            summary, details = message.split(marker, 1)
+            notify.error(self, title, summary.strip(), details=details.strip())
+            return
+        notify.error(self, title, message)
 
     def show_info(self, title: str, message: str) -> None:
-        QMessageBox.information(self, title, message)
+        notify.info(self, title, message)
 
     def show_warning(self, title: str, message: str) -> None:
-        QMessageBox.warning(self, title, message)
+        notify.warning(self, title, message)
 
     def set_overall_status(self, status: str, message: str) -> None:
         self.overall_status = status
@@ -1424,6 +1430,14 @@ class MainWindow(QMainWindow):
         if error:
             self._set_daily_running(False, "Không thể nhập dữ liệu vào file theo dõi.")
             self.logger.error("Lỗi Bước 3: %s", error)
+            if "đã thay đổi sau khi phân tích" in error:
+                self.show_warning(
+                    "Dữ liệu đã thay đổi",
+                    error
+                    + "\n\nPhần mềm sẽ phân tích lại để bạn xác nhận dòng đích mới.",
+                )
+                QTimer.singleShot(0, self.on_import_daily)
+                return
             self.show_error(
                 "Không nhập được dữ liệu",
                 error + "\n\nFile theo dõi vẫn được giữ nguyên.",
@@ -1493,109 +1507,78 @@ class MainWindow(QMainWindow):
         )
 
     def _on_daily_analysis_ready(self, analysis: ImportAnalysis) -> None:
-        if analysis.unmatched_rows:
-            self._handle_unmatched_rows(analysis)
-            return
+        if analysis.issues:
+            self.progress_daily.setVisible(False)
+            dialog = ImportResolutionDialog(
+                self.daily_import_service,
+                analysis,
+                self,
+            )
+            if dialog.exec() != QDialog.Accepted:
+                self._set_daily_running(
+                    False, "Đã hủy lần nhập; file theo dõi chưa thay đổi."
+                )
+                return
+            if dialog.saved_only:
+                path = analysis.output_path
+                cw = self.current_working_file or {}
+                if os.path.isfile(path):
+                    cw["file_size"] = os.path.getsize(path)
+                    cw["file_hash"] = file_utils.sha256_file(path)
+                self._update_record_status(
+                    "DAILY_IMPORT_PENDING",
+                    note="Đã lưu bản nháp xử lý; file theo dõi chưa thay đổi.",
+                    mark_reviewed=True,
+                )
+                self._set_daily_running(
+                    False, "Đã lưu xử lý. Có thể tiếp tục nhập ở Bước 3 sau."
+                )
+                self._update_current_file_labels(
+                    note="Đã lưu chỉnh sửa và lựa chọn xử lý; chưa ghi file Hàng ngày."
+                )
+                return
+            analysis = dialog.final_analysis or dialog.analysis
+            path = analysis.output_path
+            if os.path.isfile(path):
+                cw = self.current_working_file or {}
+                cw["file_size"] = os.path.getsize(path)
+                cw["file_hash"] = file_utils.sha256_file(path)
 
-        if not analysis.has_changes:
+        if not analysis.has_changes and not analysis.skipped_count:
             self._set_daily_running(
                 False, "Không có dòng mới nào để nhập vào file theo dõi."
             )
             self.show_info(
-                "Không có dữ liệu mới",
-                "Mọi chứng từ trong file bóc tách đều đã có sẵn trong file theo dõi "
-                "(phần mềm đối chiếu bằng cột MD5). File theo dõi giữ nguyên.\n\n"
-                "Muốn nhập lại thì xóa các dòng tương ứng khỏi file theo dõi rồi bấm "
-                "lại nút này.",
+                "Không có dữ liệu để nhập",
+                "File bóc tách hiện tại không tạo ra dòng nào có thể cập nhật vào "
+                "file theo dõi. File theo dõi được giữ nguyên.",
             )
             return
 
-        conflict_decisions: Dict[str, bool] = {}
-        if analysis.conflicts:
-            self.progress_daily.setVisible(False)
-            dialog = ConflictDialog(analysis.conflicts, self)
-            if dialog.exec() != QDialog.Accepted:
-                self._set_daily_running(False, "Đã hủy lần nhập; chưa có dữ liệu nào được ghi.")
+        if not analysis.issues:
+            summary_text = (
+                "Phần mềm đã phân tích xong:\n\n"
+                f"• Dòng quyết toán mới: {analysis.new_info_count}\n"
+                f"• Dòng quyết toán được cập nhật: {analysis.updated_info_count}\n"
+                f"• Dòng khoản chi sẽ ghi: {len(analysis.expense_changes)}\n\n"
+                "Tiếp tục cập nhật file theo dõi hàng ngày?"
+            )
+            confirmed = notify.confirm(
+                self,
+                "Xác nhận nhập dữ liệu",
+                summary_text,
+                confirm_text="Cập nhật file theo dõi",
+                cancel_text="Hủy",
+                default_confirm=True,
+            )
+            if not confirmed:
+                self._set_daily_running(False, "Đã hủy trước khi ghi file theo dõi.")
                 return
-            conflict_decisions = dialog.decisions()
-
-        summary_text = (
-            "Phần mềm đã phân tích xong:\n\n"
-            f"• Dòng quyết toán mới: {analysis.new_info_count}\n"
-            f"• Dòng quyết toán được cập nhật: {analysis.updated_info_count}\n"
-            f"• Dòng khoản chi sẽ ghi: {len(analysis.expense_changes)}\n"
-            f"• Chứng từ đã có sẵn trong file theo dõi (bỏ qua): "
-            f"{analysis.duplicate_documents}\n\n"
-            "Tiếp tục cập nhật file theo dõi hàng ngày?"
-        )
-        answer = QMessageBox.question(
-            self,
-            "Xác nhận nhập dữ liệu",
-            summary_text,
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
-        )
-        if answer != QMessageBox.Yes:
-            self._set_daily_running(False, "Đã hủy trước khi ghi file theo dõi.")
-            return
         self.progress_daily.setVisible(True)
         self.lbl_daily_status.setText("Đang cập nhật file theo dõi...")
         self._start_daily_worker(
-            lambda: self.daily_import_service.commit(
-                analysis, conflict_decisions=conflict_decisions
-            ),
+            lambda: self.daily_import_service.commit(analysis),
             self._on_daily_commit_finished,
-        )
-
-    def _handle_unmatched_rows(self, analysis: ImportAnalysis) -> None:
-        """Hỏi người dùng đúng hai lựa chọn cho các dòng không ghép được.
-
-        Quay lại Bước 2: không ghi gì thêm, mở lại màn hình kiểm tra với các
-        dòng lỗi được tô đỏ. Hủy dòng lỗi: xóa hẳn các dòng đó khỏi JSON tạm rồi
-        phân tích lại để phần còn lại vẫn được nhập trong cùng đợt này.
-        """
-        self.progress_daily.setVisible(False)
-        self.lbl_daily_status.setText(
-            f"{len(analysis.unmatched_rows)} dòng chưa ghép được với dữ liệu quyết toán."
-        )
-        dialog = UnmatchedRowsDialog(analysis.unmatched_rows, self)
-        dialog.exec()
-
-        if dialog.choice != UnmatchedRowsDialog.DROP_ERRORS:
-            self._set_daily_running(
-                False,
-                "Chưa nhập dữ liệu. Hãy sửa hoặc xóa các dòng lỗi ở Bước 2 rồi nhập lại.",
-            )
-            self._open_extract_editor(
-                error_rows={
-                    row.json_index: row.reason
-                    for row in analysis.unmatched_rows
-                    if row.json_index >= 0
-                }
-            )
-            return
-
-        try:
-            removed = remove_extract_rows(
-                analysis.output_path,
-                [row.json_index for row in analysis.unmatched_rows],
-            )
-        except DailyImportError as exc:
-            self._set_daily_running(False, "Không xóa được các dòng lỗi khỏi file JSON.")
-            self.logger.error("Không xóa được dòng lỗi khỏi JSON tạm: %s", exc)
-            self.show_error("Không xóa được dòng lỗi", str(exc))
-            return
-
-        self.logger.info("Đã xóa %s dòng lỗi khỏi file JSON tạm.", removed)
-        self.append_log(f"Đã xóa {removed} dòng lỗi khỏi file JSON tạm.")
-        self._set_daily_running(True, "Đang nhập lại các dòng còn lại...")
-        self._start_daily_worker(
-            lambda: self.daily_import_service.analyze(
-                analysis.output_path,
-                analysis.daily_path,
-                processed_file_id=analysis.processed_file_id,
-            ),
-            self._on_daily_analysis_ready,
         )
 
     def _on_daily_commit_finished(self, summary: ImportSummary) -> None:
@@ -1615,26 +1598,51 @@ class MainWindow(QMainWindow):
             f"Bước 3 hoàn tất: {summary.new_info} dòng mới, "
             f"{summary.updated_info} dòng cập nhật, {summary.new_expenses} khoản chi."
         )
-        message = (
-            "Đã cập nhật file theo dõi hàng ngày.\n\n"
-            f"Dòng quyết toán mới: {summary.new_info}\n"
-            f"Dòng quyết toán cập nhật: {summary.updated_info}\n"
-            f"Khoản chi mới: {summary.new_expenses}\n"
-            f"Khoản chi cập nhật: {summary.updated_expenses}\n"
-            f"Chứng từ đã có sẵn nên bỏ qua: {summary.duplicate_documents}"
+        notice = ""
+        if summary.pending_count:
+            notice = (
+                f"Còn {summary.pending_count} dữ liệu chưa hoàn tất. Phần mềm đã giữ "
+                "lại để bạn tiếp tục xử lý trong lần sau."
+            )
+        open_file = notify.result(
+            self,
+            "Nhập dữ liệu hoàn tất",
+            "File theo dõi hàng ngày đã được cập nhật.",
+            metrics=(
+                NotificationMetric(str(summary.new_info), "Dòng mới", "success"),
+                NotificationMetric(
+                    str(summary.updated_info), "Dòng cập nhật", "info"
+                ),
+                NotificationMetric(
+                    str(summary.new_expenses + summary.updated_expenses),
+                    "Khoản chi",
+                    "success",
+                ),
+                NotificationMetric(
+                    str(summary.pending_count),
+                    "Chờ xử lý",
+                    "warning" if summary.pending_count else "success",
+                ),
+            ),
+            notice=notice,
+            context=(
+                f"Bước 3 · {datetime.now().strftime('%H:%M %d/%m/%Y')}"
+            ),
+            action_text="Mở file theo dõi",
         )
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Information)
-        box.setWindowTitle("Nhập dữ liệu hoàn tất")
-        box.setText(message)
-        open_button = box.addButton("Mở file theo dõi", QMessageBox.ActionRole)
-        box.addButton("Đóng", QMessageBox.AcceptRole)
-        box.exec()
-        if box.clickedButton() is open_button:
+        if open_file:
             self._open_daily_file()
 
-        # Lô này đã nhập xong và không còn dòng lỗi -> dọn bộ nhớ tạm.
-        self._finish_temp_json()
+        if summary.status == "DAILY_IMPORTED":
+            self._finish_temp_json()
+        else:
+            self.overall_status = "DAILY_IMPORT_PARTIAL"
+            self._update_current_file_labels(
+                note=(
+                    f"Đã nhập phần hợp lệ; còn {summary.pending_count} dữ liệu chờ. "
+                    "JSON được giữ lại để xử lý tiếp."
+                )
+            )
 
     def _finish_temp_json(self) -> None:
         """Dọn file JSON tạm sau khi đã nhập xong toàn bộ lô."""
@@ -1886,17 +1894,18 @@ class MainWindow(QMainWindow):
             )
             return
 
-        answer = QMessageBox.question(
+        confirmed = notify.confirm(
             self,
             "Xác nhận chạy RPA",
             "Phần mềm sẽ chạy luồng RPA để nhập dữ liệu mới lên phần mềm quyết toán.\n\n"
             "Hãy chắc chắn dữ liệu đã được nhập vào file theo dõi hàng ngày và "
             "không dùng chuột/bàn phím trong lúc RPA chạy.\n\n"
             "Tiếp tục?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            confirm_text="Chạy RPA",
+            cancel_text="Quay lại",
+            tone="warning",
         )
-        if answer != QMessageBox.Yes:
+        if not confirmed:
             return
 
         try:
