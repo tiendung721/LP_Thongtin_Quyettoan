@@ -49,6 +49,14 @@ Bao gồm: `PySide6`, `watchdog`, `openpyxl`.
 
 ## 4. Chạy chương trình
 
+Để có biểu tượng KIKAI PM trên Desktop, nhấp đúp `Tao_loi_tat_PM.bat`. Shortcut
+**KIKAI Quyet Toan PM** dùng icon `Assets/KIKAI_PM.ico` và mở ứng dụng qua
+`launch_pm.vbs` để ẩn cửa sổ dòng lệnh. Nếu khởi động lỗi, chạy
+`Chay_Phan_Mem.bat` để xem thông báo chi tiết. Khi chuyển thư mục dự án sang vị
+trí khác, chạy lại `Tao_loi_tat_PM.bat` để cập nhật đường dẫn shortcut.
+
+Bạn cũng có thể chạy trực tiếp:
+
 ```bat
 python main.py
 ```

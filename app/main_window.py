@@ -17,9 +17,11 @@ import os
 import subprocess
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -220,6 +222,21 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(panel)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
+
+        logo_path = Path(__file__).resolve().parent.parent / "Assets" / "KIKAI_brand_white.png"
+        logo_image = QPixmap(str(logo_path))
+        if not logo_image.isNull():
+            brand_banner = QWidget()
+            brand_banner.setObjectName("brandBanner")
+            brand_banner.setFixedHeight(74)
+            brand_layout = QVBoxLayout(brand_banner)
+            brand_layout.setContentsMargins(15, 12, 15, 12)
+            logo = QLabel()
+            logo.setObjectName("brandLogo")
+            logo.setPixmap(logo_image.scaled(184, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            logo.setAlignment(Qt.AlignCenter)
+            brand_layout.addWidget(logo)
+            v.addWidget(brand_banner)
 
         title = QLabel("Trợ Lý Quyết Toán")
         title.setObjectName("appTitle")

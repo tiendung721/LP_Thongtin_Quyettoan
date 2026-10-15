@@ -7,12 +7,24 @@ from __future__ import annotations
 
 import sys
 import traceback
+from pathlib import Path
+
+
+WINDOWS_APP_ID = "KIKAI.QuyetToan.PM"
+
+
+def _set_windows_app_id() -> None:
+    if sys.platform == "win32":
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_ID)
 
 
 def main() -> int:
     # Import bên trong hàm để có thể hiển thị thông báo thân thiện nếu
     # thiếu thư viện (PySide6/watchdog/openpyxl).
     try:
+        from PySide6.QtGui import QIcon
         from PySide6.QtWidgets import QApplication, QMessageBox
     except ModuleNotFoundError:
         print(
@@ -27,8 +39,13 @@ def main() -> int:
     from app.logger_setup import setup_logger
     from app.main_window import MainWindow
 
+    _set_windows_app_id()
     app = QApplication(sys.argv)
     app.setApplicationName("Trợ Lý Quyết Toán RPA")
+    app.setApplicationDisplayName("Trợ Lý Quyết Toán RPA")
+    icon = QIcon(str(Path(__file__).resolve().parent / "Assets" / "KIKAI_PM.ico"))
+    if not icon.isNull():
+        app.setWindowIcon(icon)
     theme.apply_theme(app)
 
     try:
@@ -46,6 +63,8 @@ def main() -> int:
         logger.info("Đã khởi tạo database: %s", config.database_path)
         # 5) Mở cửa sổ chính.
         window = MainWindow(config, database, logger)
+        if not icon.isNull():
+            window.setWindowIcon(icon)
         window.show()
     except Exception as exc:  # noqa: BLE001 - hiển thị lỗi thân thiện thay vì crash
         traceback.print_exc()

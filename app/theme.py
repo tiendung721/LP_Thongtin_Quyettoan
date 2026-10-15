@@ -32,14 +32,19 @@ QWidget#page { background: #F4F6F9; }
 QStackedWidget#content { background: #F4F6F9; }
 
 /* ---------- Thanh điều hướng bên trái ---------- */
-QWidget#sidebar { background: #FFFFFF; border-right: 1px solid #E5E7EB; }
-QLabel#appTitle { font-size: 15pt; font-weight: 700; color: #111827; padding: 20px 16px 2px 16px; }
-QLabel#appSubtitle { font-size: 9pt; color: #6B7280; padding: 0 16px 14px 16px; }
+QWidget#sidebar {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #152D4D, stop:1 #0C1A31);
+    border-right: 1px solid #172F50;
+}
+QWidget#brandBanner { background: transparent; }
+QLabel#appTitle { font-size: 15pt; font-weight: 700; color: #FFFFFF; padding: 20px 16px 2px 16px; }
+QLabel#appSubtitle { font-size: 9pt; color: #B8C9E2; padding: 0 16px 14px 16px; }
 QListWidget#navList { background: transparent; border: none; outline: 0; }
-QListWidget#navList::item { padding: 11px 14px; margin: 3px 10px; border-radius: 8px; color: #374151; }
-QListWidget#navList::item:hover { background: #F3F4F6; }
-QListWidget#navList::item:selected { background: #EFF6FF; color: #1D4ED8; font-weight: 600; }
-QLabel#navFooter { color: #9CA3AF; font-size: 8.5pt; padding: 10px 16px 14px 16px; }
+QListWidget#navList::item { padding: 11px 14px; margin: 3px 10px; border-radius: 8px; color: #FFFFFF; }
+QListWidget#navList::item:hover { background: #25436B; }
+QListWidget#navList::item:selected { background: #2563EB; color: #FFFFFF; font-weight: 600; }
+QLabel#navFooter { color: #9EB2D0; font-size: 8.5pt; padding: 10px 16px 14px 16px; }
 
 /* ---------- Thẻ (card) ---------- */
 QFrame#card { background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 12px; }
