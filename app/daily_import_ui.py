@@ -311,6 +311,7 @@ class JsonExtractDialog(ResizableDialog):
         "Ngày dùng để ghép",
         "Thông tin chính",
         "Số tấn / Tổng tiền",
+        "Giá VL",
         "Trạng thái",
     ]
 
@@ -475,7 +476,10 @@ class JsonExtractDialog(ResizableDialog):
         if self._sort_column == 4:
             parsed = parse_date(match_date_of(row))
             return (0, parsed) if parsed else (1, "")
-        if self._sort_column == 6:
+        if self._sort_column in (6, 7):
+            if self._sort_column == 7:
+                value = parse_number(row.get("gia_vat_lieu"))
+                return (0, value) if value is not None else (1, 0)
             raw = row.get("so_tan") if classify_doc_type(row.get("loai_chung_tu")) in (DOC_SCALE, DOC_BILL) and row.get("so_tan") not in (None, "") else row.get("tong_tien")
             value = parse_number(raw)
             return (0, value) if value is not None else (1, 0)
@@ -509,7 +513,7 @@ class JsonExtractDialog(ResizableDialog):
             if query and query not in " ".join(map(str, self._row_cells(index, row, doc_type))).casefold():
                 continue
             visible.append(index)
-        if self._sort_column in (4, 6):
+        if self._sort_column in (4, 6, 7):
             filled = [index for index in visible if self._sort_value(index)[0] == 0]
             blank = [index for index in visible if self._sort_value(index)[0] != 0]
             filled.sort(key=self._sort_value, reverse=not self._sort_ascending)
@@ -557,6 +561,7 @@ class JsonExtractDialog(ResizableDialog):
             _display_date(match_date_of(row)),
             _main_info(doc_type, row),
             _amount_info(doc_type, row),
+            _display_number(row.get("gia_vat_lieu")),
             self._status_text(index, row),
         ]
 
