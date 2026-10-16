@@ -85,17 +85,17 @@ from .watcher import OutputWatcher
 
 # Nhãn tiếng Việt cho từng trạng thái (không kèm mã kỹ thuật cho dễ hiểu).
 STATUS_LABELS = {
-    "WAITING_FOR_DOWNLOAD": "Đang chờ file output",
-    "DOWNLOADED": "Đã nhận file output",
+    "WAITING_FOR_DOWNLOAD": "Đang chờ chứng từ mới",
+    "DOWNLOADED": "Đã nhận chứng từ mới",
     "READY_FOR_REVIEW": "Sẵn sàng để kiểm tra",
     "OPENED_FOR_REVIEW": "Đang mở để kiểm tra",
     "REVIEW_SAVED": "Đã lưu sau khi chỉnh sửa",
     "COMPLETED": "Đã kiểm tra & hoàn tất",
-    "DAILY_IMPORT_PENDING": "Đang chờ nhập file theo dõi",
-    "DAILY_IMPORT_PARTIAL": "Đã nhập một phần vào file theo dõi",
-    "DAILY_IMPORTED": "Đã nhập vào file theo dõi",
-    "DAILY_IMPORT_ERROR": "Lỗi nhập file theo dõi",
-    "RPA_LAUNCHED": "Đã khởi chạy RPA quyết toán",
+    "DAILY_IMPORT_PENDING": "Đang chờ cập nhật bảng theo dõi",
+    "DAILY_IMPORT_PARTIAL": "Đã cập nhật một phần; còn dòng chờ",
+    "DAILY_IMPORTED": "Đã cập nhật bảng theo dõi",
+    "DAILY_IMPORT_ERROR": "Lỗi cập nhật bảng theo dõi",
+    "RPA_LAUNCHED": "Đã mở tác vụ nhập quyết toán",
     # Các trạng thái cũ (giữ để hiển thị lại lịch sử từ phiên bản trước).
     "REVIEW_CONFIRMED": "Đã xác nhận dùng file này",
     "READY_TO_PREVIEW": "Sẵn sàng duyệt dữ liệu",
@@ -160,6 +160,8 @@ class MainWindow(QMainWindow):
         self._daily_worker_callback = None
         self._rpa_cooldown = False
         self._select_sqt_dialog_open = False
+        self._active_deferred_batch_id: Optional[int] = None
+        self._active_deferred_source_key = ""
         self._rpa_launched_at: Optional[str] = None
         self._last_saved_shown = ""
         self._assistant_session_active = False
@@ -241,7 +243,7 @@ class MainWindow(QMainWindow):
         title = QLabel("Trợ Lý Quyết Toán")
         title.setObjectName("appTitle")
         title.setWordWrap(True)
-        subtitle = QLabel("RPA hỗ trợ quyết toán")
+        subtitle = QLabel("Theo dõi chứng từ và quyết toán")
         subtitle.setObjectName("appSubtitle")
         v.addWidget(title)
         v.addWidget(subtitle)
@@ -426,21 +428,21 @@ class MainWindow(QMainWindow):
 
         # Bước 1 — mở trợ lý
         if has_file:
-            self._set_step(1, "Đã có file output", "done")
+            self._set_step(1, "Đã nhận chứng từ", "done")
         else:
             self._set_step(1, "Bắt đầu tại đây", "active")
 
         # Bước 2 — file bóc tách
         if not has_file:
-            self._set_step(2, "Chờ file output", "wait")
+            self._set_step(2, "Chờ chứng từ mới", "wait")
         elif is_error:
             self._set_step(2, "Lỗi", "error")
         else:
-            self._set_step(2, "Đã có file", "done")
+            self._set_step(2, "Sẵn sàng kiểm tra", "done")
 
         # Bước 3 — nhập lên file hàng ngày
         if not has_file:
-            self._set_step(3, "Chờ file bóc tách", "wait")
+            self._set_step(3, "Chờ chứng từ", "wait")
         elif not has_daily:
             self._set_step(3, "Thiếu file theo dõi", "warn")
         elif status == "DAILY_IMPORT_ERROR":
@@ -483,7 +485,7 @@ class MainWindow(QMainWindow):
         if not self._daily_import_running:
             if not has_file:
                 self.lbl_daily_status.setText(
-                    "Chờ file bóc tách từ trợ lý rồi mới nhập được."
+                    "Chờ chứng từ từ trợ lý rồi mới cập nhật được."
                 )
             elif not has_daily:
                 self.lbl_daily_status.setText(
@@ -496,7 +498,7 @@ class MainWindow(QMainWindow):
                 "DAILY_IMPORT_ERROR",
             ):
                 self.lbl_daily_status.setText(
-                    "Sẵn sàng: phần mềm sẽ lấy bản lưu mới nhất của file bóc tách."
+                    "Sẵn sàng kiểm tra và cập nhật chứng từ mới nhất."
                 )
 
     # ---- Trang "Chức năng" ------------------------------------------ #
@@ -536,7 +538,7 @@ class MainWindow(QMainWindow):
 
         # --- Bước 2: xem file bóc tách dữ liệu ---
         self.card_step2, self.badge2, self.chip2, guide2, body2 = self._step_card(
-            "2", "Xem file bóc tách dữ liệu"
+            "2", "Kiểm tra chứng từ"
         )
         guide2.addWidget(self._guide_label(
             "Khi trợ lý tải file JSON về, phần mềm tự mở bảng tổng quan cả lô bóc "
@@ -544,7 +546,7 @@ class MainWindow(QMainWindow):
             "màn hình tự đóng và dòng “Lưu thành công lần cuối” bên dưới cập nhật "
             "theo. Dòng nào Bước 3 chưa nhập được sẽ được tô đỏ kèm lý do."
         ))
-        self.lbl_file_name = QLabel("Chưa có file bóc tách")
+        self.lbl_file_name = QLabel("Chưa có chứng từ mới")
         self.lbl_file_name.setObjectName("fileName")
         self.lbl_file_name.setWordWrap(True)
         self.lbl_file_name.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -557,7 +559,7 @@ class MainWindow(QMainWindow):
         self.lbl_file_saved = QLabel("Lưu thành công lần cuối: —")
         self.lbl_file_saved.setObjectName("metaText")
         self.btn_view_extract = self._make_button(
-            "Xem file bóc tách",
+            "Kiểm tra chứng từ",
             self.on_view_extract_file,
             variant="primary",
             action=True,
@@ -567,15 +569,14 @@ class MainWindow(QMainWindow):
 
         # --- Bước 3: nhập lên file hàng ngày ---
         self.card_step3, self.badge3, self.chip3, guide3, body3 = self._step_card(
-            "3", "Nhập lên file hàng ngày"
+            "3", "Cập nhật bảng theo dõi"
         )
         guide3.addWidget(self._guide_label(
-            "Phần mềm đọc thẳng file JSON bạn vừa xem ở Bước 2, ghép Phiếu cân, Bill "
-            "và khoản chi rồi cập nhật file theo dõi hàng ngày. Nếu có dòng chưa rõ, "
-            "một cửa sổ xử lý sẽ cho phép sửa dữ liệu, chọn đúng dòng Excel/Bill hoặc "
-            "bỏ qua trong lần nhập này. Excel chỉ thay đổi sau khi bạn xác nhận cuối."
+            "Phần mềm đối chiếu chứng từ với bảng theo dõi. Nếu có dòng chưa rõ, "
+            "bạn có thể sửa thông tin, chọn kết quả phù hợp hoặc để xử lý sau. "
+            "Bảng theo dõi chỉ thay đổi khi bạn xác nhận nhập."
         ))
-        self.lbl_daily_status = QLabel("Chưa nhập dữ liệu vào file theo dõi.")
+        self.lbl_daily_status = QLabel("Chưa cập nhật bảng theo dõi.")
         self.lbl_daily_status.setObjectName("hintText")
         self.lbl_daily_status.setWordWrap(True)
         self.progress_daily = QProgressBar()
@@ -589,12 +590,16 @@ class MainWindow(QMainWindow):
         self.lbl_daily_path.setObjectName("metaText")
         self.lbl_daily_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.btn_import_daily = self._make_button(
-            "Nhập lên file hàng ngày",
+            "Cập nhật bảng theo dõi",
             self.on_import_daily,
             variant="primary",
             action=True,
         )
         body3.addLayout(self._action_row(self.btn_import_daily, self.lbl_daily_path))
+        self.btn_deferred = self._make_button(
+            "Còn dòng cần xử lý", self.on_open_deferred, action=True
+        )
+        body3.addWidget(self.btn_deferred, alignment=Qt.AlignLeft)
         v.addWidget(self.card_step3)
 
         # --- Bước 4: nhập lên phần mềm quyết toán bằng RPA ---
@@ -602,11 +607,10 @@ class MainWindow(QMainWindow):
             "4", "Nhập lên phần mềm quyết toán"
         )
         guide4.addWidget(self._guide_label(
-            "Tạo Số QT mới sẽ gọi riêng flow PAD tạo mới và không đọc Excel. Nhập thông tin sẽ đọc "
-            "các sheet Tháng; Nhập khoản chi sẽ đọc sheet Khoan_Chi. Cả hai đều cho "
-            "chọn một hoặc nhiều SQT rồi ghi JSON tạm cho PAD."
+            "Tạo số quyết toán mới hoặc chọn một hay nhiều số quyết toán để nhập "
+            "thông tin và khoản chi. Mỗi nút mở đúng tác vụ tương ứng."
         ))
-        self.lbl_rpa_status = QLabel("Chưa chạy luồng RPA trong phiên này.")
+        self.lbl_rpa_status = QLabel("Chưa thực hiện bước này trong phiên làm việc.")
         self.lbl_rpa_status.setObjectName("hintText")
         self.lbl_rpa_status.setWordWrap(True)
         body4.addWidget(self.lbl_rpa_status)
@@ -614,7 +618,7 @@ class MainWindow(QMainWindow):
         self.lbl_create_new_path = QLabel("")
         self.lbl_create_new_path.setObjectName("metaText")
         self.btn_create_new_sqt = self._make_button(
-            "Tạo 1 Số QT mới trên PM",
+            "Tạo số quyết toán mới",
             self.on_create_new_sqt,
             variant="success",
             action=True,
@@ -917,6 +921,7 @@ class MainWindow(QMainWindow):
             and bool(daily_path and os.path.isfile(daily_path))
             and not self._daily_import_running
         )
+        self._refresh_deferred_button()
         # Bước 4 luôn dùng được (trừ vài giây chống bấm trùng); nếu chưa cấu
         # hình file .bat thì báo lỗi hướng dẫn ngay lúc bấm.
         self.btn_create_new_sqt.setEnabled(not self._rpa_cooldown)
@@ -945,7 +950,7 @@ class MainWindow(QMainWindow):
             self.lbl_create_new_path.setText("Tạo mới: " + os.path.basename(create_bat))
             self.lbl_create_new_path.setToolTip(create_bat)
         else:
-            self.lbl_create_new_path.setText("Chưa cấu hình BAT tạo mới (xem tab Cài đặt)")
+            self.lbl_create_new_path.setText("Chưa thiết lập tác vụ tạo mới (mở Cài đặt)")
             self.lbl_create_new_path.setToolTip("")
 
         input_bat = self.config.pad_input_information_bat_path
@@ -956,7 +961,7 @@ class MainWindow(QMainWindow):
             self.lbl_input_information_path.setToolTip(input_bat)
         else:
             self.lbl_input_information_path.setText(
-                "Chưa cấu hình BAT nhập thông tin (xem tab Cài đặt)"
+                "Chưa thiết lập tác vụ nhập thông tin (mở Cài đặt)"
             )
             self.lbl_input_information_path.setToolTip("")
 
@@ -968,7 +973,7 @@ class MainWindow(QMainWindow):
             self.lbl_input_expense_path.setToolTip(expense_bat)
         else:
             self.lbl_input_expense_path.setText(
-                "Chưa cấu hình BAT nhập khoản chi (xem tab Cài đặt)"
+                "Chưa thiết lập tác vụ nhập khoản chi (mở Cài đặt)"
             )
             self.lbl_input_expense_path.setToolTip("")
 
@@ -992,10 +997,10 @@ class MainWindow(QMainWindow):
     def _update_current_file_labels(self, note: Optional[str] = None) -> None:
         cw = self.current_working_file
         if not cw:
-            self.lbl_file_name.setText("Chưa có file bóc tách")
+            self.lbl_file_name.setText("Chưa có chứng từ mới")
             self.lbl_file_name.setToolTip("")
             self.lbl_file_note.setText(
-                "Hãy bấm “Mở trợ lý quyết toán” ở Bước 1 rồi tải file bóc tách về."
+                "Hãy bấm “Mở trợ lý quyết toán” ở Bước 1 rồi tải chứng từ về."
             )
             self._refresh_saved_label()
             self._update_button_states()
@@ -1407,6 +1412,151 @@ class MainWindow(QMainWindow):
     # ================================================================== #
     # Bước 3: nhập dữ liệu vào file theo dõi hàng ngày
     # ================================================================== #
+    def _refresh_deferred_button(self) -> None:
+        try:
+            count = self.database.count_deferred_rows()
+        except Exception:  # noqa: BLE001
+            self.logger.exception("Không đọc được số dòng đang chờ xử lý.")
+            count = 0
+        self.btn_deferred.setText(f"Còn {count} dòng cần xử lý")
+        self.btn_deferred.setVisible(count > 0)
+        self.btn_deferred.setEnabled(count > 0 and not self._daily_import_running)
+
+    def on_open_deferred(self) -> None:
+        """Mở một lô đã gác lại, kể cả khi file bóc tách gốc đã được dọn."""
+        if self._daily_import_running:
+            return
+        batches = self.database.list_deferred_batches()
+        if not batches:
+            self._refresh_deferred_button()
+            return
+        daily_path = self.config.daily_tracking_file
+        if not daily_path or not os.path.isfile(daily_path):
+            self.show_warning("Chưa có file theo dõi", "Hãy chọn file theo dõi hàng ngày trong Cài đặt.")
+            return
+        if file_utils.is_file_locked(daily_path):
+            self.show_warning("File theo dõi đang mở", "Hãy lưu và đóng Excel rồi thử lại.")
+            return
+
+        batch = batches[0]
+        if len(batches) > 1:
+            picker = QDialog(self)
+            picker.setWindowTitle("Chọn chứng từ cần xử lý")
+            picker.resize(620, 420)
+            layout = QVBoxLayout(picker)
+            layout.addWidget(QLabel("Chọn lô chứng từ bạn muốn xử lý tiếp:"))
+            list_widget = QListWidget()
+            for item in batches:
+                entry = QListWidgetItem(
+                    f"{item['row_count']} chứng từ · lưu lúc {item['updated_at']}"
+                )
+                entry.setData(Qt.UserRole, item["id"])
+                entry.setToolTip(item["source_name"])
+                list_widget.addItem(entry)
+            list_widget.setCurrentRow(0)
+            list_widget.itemDoubleClicked.connect(lambda _item: picker.accept())
+            layout.addWidget(list_widget)
+            buttons = QHBoxLayout()
+            buttons.addStretch(1)
+            cancel = QPushButton("Đóng")
+            choose = QPushButton("Xử lý tiếp")
+            choose.setProperty("variant", "primary")
+            cancel.clicked.connect(picker.reject)
+            choose.clicked.connect(picker.accept)
+            buttons.addWidget(cancel)
+            buttons.addWidget(choose)
+            layout.addLayout(buttons)
+            if picker.exec() != QDialog.Accepted or list_widget.currentItem() is None:
+                return
+            selected_id = list_widget.currentItem().data(Qt.UserRole)
+            batch = next(item for item in batches if item["id"] == selected_id)
+
+        if os.path.normcase(os.path.abspath(batch["daily_path"])) != os.path.normcase(os.path.abspath(daily_path)):
+            if not notify.confirm(
+                self, "File theo dõi đã đổi",
+                "Các dòng này được gác lại khi dùng một file theo dõi khác. Phần mềm sẽ kiểm tra lại với file hiện tại trước khi nhập. Tiếp tục?",
+                confirm_text="Kiểm tra lại", cancel_text="Quay lại",
+            ):
+                return
+        try:
+            output_path = self.daily_import_service.open_deferred_batch(batch["id"], daily_path)
+        except DailyImportError as exc:
+            self.show_error("Không mở được dòng chờ", str(exc))
+            return
+        self._active_deferred_batch_id = batch["id"]
+        self._active_deferred_source_key = batch["source_key"]
+        self._set_daily_running(True, "Đang kiểm tra lại các dòng đã để sau...")
+        self._start_daily_worker(
+            lambda: self.daily_import_service.analyze(output_path, daily_path),
+            self._on_deferred_analysis_ready,
+        )
+
+    def _on_deferred_analysis_ready(self, analysis: ImportAnalysis) -> None:
+        if analysis.issues:
+            self.progress_daily.setVisible(False)
+            dialog = ImportResolutionDialog(self.daily_import_service, analysis, self)
+            if dialog.exec() != QDialog.Accepted:
+                self._active_deferred_batch_id = None
+                self._active_deferred_source_key = ""
+                self._set_daily_running(False, "Đã đóng danh sách chờ; file theo dõi chưa thay đổi.")
+                return
+            if dialog.saved_only:
+                self._active_deferred_batch_id = None
+                self._active_deferred_source_key = ""
+                self._set_daily_running(False, "Đã lưu lựa chọn; có thể xử lý tiếp sau.")
+                self._refresh_deferred_button()
+                return
+            analysis = dialog.final_analysis or dialog.analysis
+        else:
+            description = (
+                f"Dòng quyết toán mới: {analysis.new_info_count}\n"
+                f"Dòng cập nhật: {analysis.updated_info_count}\n"
+                f"Dòng khoản chi: {len(analysis.expense_changes)}\n\n"
+                "Tiếp tục xác nhận kết quả kiểm tra lại?"
+            )
+            if not notify.confirm(
+                self, "Xác nhận xử lý dòng chờ", description,
+                confirm_text="Tiếp tục", cancel_text="Quay lại",
+            ):
+                self._active_deferred_batch_id = None
+                self._active_deferred_source_key = ""
+                self._set_daily_running(False, "Chưa thay đổi file theo dõi.")
+                return
+        self.progress_daily.setVisible(True)
+        self._start_daily_worker(
+            lambda: self.daily_import_service.commit(analysis),
+            self._on_deferred_commit_finished,
+        )
+
+    def _on_deferred_commit_finished(self, summary: ImportSummary) -> None:
+        batch_id = self._active_deferred_batch_id
+        source_key = self._active_deferred_source_key
+        self._active_deferred_batch_id = None
+        self._active_deferred_source_key = ""
+        self._set_daily_running(False)
+        self._refresh_deferred_button()
+        cw = self.current_working_file or {}
+        if (
+            batch_id is not None
+            and self.database.get_deferred_batch(batch_id) is None
+            and source_key == f"processed:{cw.get('id')}"
+            and cw.get("status") == "DAILY_IMPORT_PARTIAL"
+        ):
+            self._update_record_status(
+                "DAILY_IMPORTED", note="Các dòng đã để sau của lô này đã được xử lý xong."
+            )
+        self._refresh_daily_labels()
+        if summary.wrote_workbook:
+            self.show_info(
+                "Đã nhập các dòng xử lý xong",
+                f"Đã thêm {summary.new_info} dòng mới, cập nhật {summary.updated_info} dòng; "
+                f"còn {summary.pending_count} dòng chờ xử lý.",
+            )
+        else:
+            self.show_info(
+                "Đã kiểm tra lại", f"File theo dõi chưa thay đổi; còn {summary.pending_count} dòng chờ xử lý."
+            )
+
     def _start_daily_worker(self, function, callback) -> None:
         """Chạy một tác vụ nặng, sau đó giao kết quả về UI thread."""
         if self._daily_thread is not None:
@@ -1445,6 +1595,13 @@ class MainWindow(QMainWindow):
         if thread is not None:
             thread.deleteLater()
         if error:
+            if self._active_deferred_batch_id is not None:
+                self._active_deferred_batch_id = None
+                self._active_deferred_source_key = ""
+                self._set_daily_running(False, "Không kiểm tra được các dòng chờ.")
+                self._refresh_deferred_button()
+                self.show_error("Không xử lý được dòng chờ", error)
+                return
             self._set_daily_running(False, "Không thể nhập dữ liệu vào file theo dõi.")
             self.logger.error("Lỗi Bước 3: %s", error)
             if "đã thay đổi sau khi phân tích" in error:
@@ -1457,7 +1614,7 @@ class MainWindow(QMainWindow):
                 return
             self.show_error(
                 "Không nhập được dữ liệu",
-                error + "\n\nFile theo dõi vẫn được giữ nguyên.",
+                error if "đã được cập nhật" in error else error + "\n\nFile theo dõi vẫn được giữ nguyên.",
             )
             self._refresh_daily_labels()
             return
@@ -1602,7 +1759,10 @@ class MainWindow(QMainWindow):
         self._set_daily_running(False)
         cw = self.current_working_file or {}
         cw["status"] = summary.status
-        self.lbl_daily_status.setText("Hoàn tất.")
+        self.lbl_daily_status.setText(
+            "Đã lưu các dòng chờ; file theo dõi chưa thay đổi."
+            if not summary.wrote_workbook else "Hoàn tất."
+        )
         self._update_current_file_labels(
             note=(
                 f"Đã cập nhật file theo dõi: {summary.new_info} dòng mới, "
@@ -1610,6 +1770,7 @@ class MainWindow(QMainWindow):
             )
         )
         self.refresh_history()
+        self._refresh_deferred_button()
         self._refresh_daily_labels()
         self.append_log(
             f"Bước 3 hoàn tất: {summary.new_info} dòng mới, "
@@ -1623,8 +1784,8 @@ class MainWindow(QMainWindow):
             )
         open_file = notify.result(
             self,
-            "Nhập dữ liệu hoàn tất",
-            "File theo dõi hàng ngày đã được cập nhật.",
+            "Đã lưu các dòng chờ" if not summary.wrote_workbook else "Nhập dữ liệu hoàn tất",
+            "File theo dõi chưa thay đổi." if not summary.wrote_workbook else "File theo dõi hàng ngày đã được cập nhật.",
             metrics=(
                 NotificationMetric(str(summary.new_info), "Dòng mới", "success"),
                 NotificationMetric(
@@ -1645,9 +1806,9 @@ class MainWindow(QMainWindow):
             context=(
                 f"Bước 3 · {datetime.now().strftime('%H:%M %d/%m/%Y')}"
             ),
-            action_text="Mở file theo dõi",
+            action_text="Mở file theo dõi" if summary.wrote_workbook else "Đóng",
         )
-        if open_file:
+        if open_file and summary.wrote_workbook:
             self._open_daily_file()
 
         if summary.status == "DAILY_IMPORTED":

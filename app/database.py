@@ -84,6 +84,19 @@ CREATE TABLE IF NOT EXISTS import_resolution_drafts (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS deferred_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_key TEXT NOT NULL UNIQUE,
+    source_name TEXT NOT NULL,
+    daily_path TEXT NOT NULL,
+    daily_hash TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL,
+    resolutions_json TEXT NOT NULL DEFAULT '{}',
+    row_count INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_staged_rows_state ON staged_rows(state);
 CREATE INDEX IF NOT EXISTS idx_staged_rows_container ON staged_rows(container_norm);
 """
@@ -121,6 +134,13 @@ class Database:
                     "ALTER TABLE processed_files ADD COLUMN output_path TEXT"
                 )
             conn.executescript(_CREATE_DAILY_IMPORT_TABLES_SQL)
+            deferred_cols = {
+                row["name"] for row in conn.execute("PRAGMA table_info(deferred_batches)")
+            }
+            if "daily_hash" not in deferred_cols:
+                conn.execute("ALTER TABLE deferred_batches ADD COLUMN daily_hash TEXT NOT NULL DEFAULT ''")
+            if "resolutions_json" not in deferred_cols:
+                conn.execute("ALTER TABLE deferred_batches ADD COLUMN resolutions_json TEXT NOT NULL DEFAULT '{}'")
             conn.commit()
 
     # ------------------------------------------------------------------ #
@@ -578,4 +598,76 @@ class Database:
                 "DELETE FROM import_resolution_drafts WHERE output_path = ?",
                 (output_path,),
             )
+            conn.commit()
+
+    def save_deferred_batch(
+        self, source_key: str, source_name: str, daily_path: str, payload: Dict[str, Any],
+        resolutions: Optional[Dict[str, Any]] = None, daily_hash: str = "",
+    ) -> int:
+        rows = payload.get("du_lieu_boc_tach") or []
+        now = _now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO deferred_batches (
+                    source_key, source_name, daily_path, daily_hash, payload_json,
+                    resolutions_json, row_count, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_key) DO UPDATE SET
+                    source_name = excluded.source_name,
+                    daily_path = excluded.daily_path,
+                    daily_hash = excluded.daily_hash,
+                    payload_json = excluded.payload_json,
+                    resolutions_json = excluded.resolutions_json,
+                    row_count = excluded.row_count,
+                    updated_at = excluded.updated_at
+                """,
+                (source_key, source_name, daily_path, daily_hash,
+                 json.dumps(payload, ensure_ascii=False, default=str),
+                 json.dumps(resolutions or {}, ensure_ascii=False, default=str),
+                 len(rows), now, now),
+            )
+            row = conn.execute(
+                "SELECT id FROM deferred_batches WHERE source_key = ?", (source_key,)
+            ).fetchone()
+            conn.commit()
+            return int(row["id"])
+
+    def list_deferred_batches(self) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, source_key, source_name, daily_path, row_count, created_at, updated_at "
+                "FROM deferred_batches ORDER BY updated_at DESC, id DESC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_deferred_batch(self, batch_id: int) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM deferred_batches WHERE id = ?", (batch_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["payload"] = json.loads(result.pop("payload_json"))
+        result["resolutions"] = json.loads(result.pop("resolutions_json"))
+        return result
+
+    def get_deferred_batch_by_key(self, source_key: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM deferred_batches WHERE source_key = ?", (source_key,)
+            ).fetchone()
+        return self.get_deferred_batch(int(row["id"])) if row else None
+
+    def count_deferred_rows(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(row_count), 0) AS count FROM deferred_batches"
+            ).fetchone()
+        return int(row["count"])
+
+    def delete_deferred_batch(self, batch_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM deferred_batches WHERE id = ?", (batch_id,))
             conn.commit()

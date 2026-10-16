@@ -3,20 +3,30 @@
 Phần mềm desktop Windows điều phối luồng làm việc giữa **GPT Custom**, **file
 JSON bóc tách**, **file theo dõi hàng ngày** và **phần mềm quyết toán**.
 
-Luồng gồm 4 bước, mỗi bước đúng **một nút bấm**:
+Luồng gồm 4 bước, mỗi bước có một thao tác chính:
 
 1. **Mở trợ lý quyết toán** — chạy file `.bat` mở GPT Custom để bóc tách chứng từ.
-2. **Xem file bóc tách dữ liệu** — file JSON trong `output` được mở bằng màn hình kiểm
+2. **Kiểm tra chứng từ** — file JSON trong `output` được mở bằng màn hình kiểm
    tra/sửa dữ liệu của phần mềm; nút này mở lại dữ liệu bất cứ lúc nào, kèm dòng
    **“Lưu lần cuối”** hiển thị đúng thời điểm bạn bấm **Lưu**.
-3. **Nhập lên file hàng ngày** — lấy **bản lưu mới nhất** của file bóc tách và cập
+3. **Cập nhật bảng theo dõi** — lấy **bản lưu mới nhất** của file bóc tách và cập
    nhật file theo dõi hàng ngày.
 4. **Nhập dữ liệu mới lên phần mềm quyết toán** — chạy file `.bat` khởi động luồng
    **PAD RPA**.
 
 File JSON bóc tách là **bộ nhớ tạm của một lô chứng từ**: nó nằm trực tiếp trong
-`output`, là bản duy nhất bạn xem/sửa ở Bước 2 và là bản Bước 3 đọc trực tiếp.
-Lô mới thay thế lô cũ, và sau khi nhập xong sạch lỗi thì file tạm được dọn đi.
+`output`, là bản bạn xem/sửa ở Bước 2 và là bản Bước 3 đọc trực tiếp. Lô mới thay
+thế file tạm cũ. Những dòng đã chọn **Để xử lý sau** được phần mềm lưu riêng,
+nên vẫn mở lại được khi đã có lô mới hoặc sau khi khởi động lại.
+
+Ở màn hình kiểm tra và xử lý, dùng bộ lọc, ô tìm kiếm hoặc bấm tên cột để sắp
+xếp. Có thể chọn nhiều dòng rồi bấm **Xử lý hàng loạt**; phần mềm hiện các cách
+xử lý phù hợp theo từng loại vấn đề và cho xem trước trước khi áp dụng.
+
+Nếu còn dòng chưa đủ thông tin, chọn **Để xử lý sau** và xác nhận nhập các dòng
+đã xử lý. Bước 3 sẽ hiện nút **Còn N dòng cần xử lý** để mở lại danh sách chờ,
+kiểm tra với file theo dõi hiện tại và nhập phần đã hoàn tất. Dòng đang chờ
+không được ghi vào file theo dõi trong lần nhập trước.
 
 ---
 

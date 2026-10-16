@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import os
 from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from PySide6.QtCore import QObject, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QButtonGroup,
     QComboBox,
     QDialog,
@@ -20,6 +23,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
@@ -44,6 +48,10 @@ from .daily_import import (
     ImportIssue,
     IssueResolution,
     ISSUE_FIELD_CONFLICT,
+    ISSUE_MISSING_CLOSE_DATE,
+    ISSUE_MULTIPLE_BILLS,
+    ISSUE_MULTIPLE_TARGETS,
+    ISSUE_NO_TARGET,
     RESOLUTION_FIELDS,
     RESOLUTION_SELECT,
     RESOLUTION_SKIP,
@@ -325,6 +333,9 @@ class JsonExtractDialog(ResizableDialog):
         ]
         self.saved = False
         self._dirty = False
+        self._visible_indices: List[int] = []
+        self._sort_column = 0
+        self._sort_ascending = True
 
         self.setWindowTitle("Kiểm tra dữ liệu bóc tách")
         self.resize(1160, 660)
@@ -332,7 +343,8 @@ class JsonExtractDialog(ResizableDialog):
 
         layout = QVBoxLayout(self)
 
-        title = QLabel(path)
+        title = QLabel(f"Đang xem: {os.path.basename(path)}")
+        title.setToolTip(path)
         title.setObjectName("metaText")
         title.setWordWrap(True)
         title.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -358,6 +370,25 @@ class JsonExtractDialog(ResizableDialog):
         summary_layout.addWidget(self.lbl_types)
         layout.addWidget(summary)
 
+        filters = QHBoxLayout()
+        self.status_filter = QComboBox()
+        self.status_filter.addItems(["Mọi trạng thái", "Cần kiểm tra", "Sẵn sàng", "Có cảnh báo"])
+        self.type_filter = QComboBox()
+        self.type_filter.addItem("Mọi chứng từ", "ALL")
+        self.type_filter.addItem("Khoản chi", DOC_EXPENSE)
+        self.type_filter.addItem("Phiếu cân", DOC_SCALE)
+        self.type_filter.addItem("Bill", DOC_BILL)
+        self.type_filter.addItem("Loại khác", "OTHER")
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Tìm chứng từ, container, file nguồn...")
+        self.status_filter.currentIndexChanged.connect(self._refresh_table)
+        self.type_filter.currentIndexChanged.connect(self._refresh_table)
+        self.search.textChanged.connect(self._refresh_table)
+        filters.addWidget(self.status_filter)
+        filters.addWidget(self.type_filter)
+        filters.addWidget(self.search, stretch=1)
+        layout.addLayout(filters)
+
         self.table = QTableWidget(0, len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels(self.COLUMNS)
         self.table.setAlternatingRowColors(True)
@@ -367,6 +398,8 @@ class JsonExtractDialog(ResizableDialog):
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
+        self.table.horizontalHeader().sectionClicked.connect(self._sort_by)
         self.table.doubleClicked.connect(self.edit_row)
         layout.addWidget(self.table, stretch=1)
 
@@ -388,8 +421,8 @@ class JsonExtractDialog(ResizableDialog):
         layout.addLayout(buttons)
 
         self._refresh()
-        if self.rows:
-            self.table.selectRow(self._first_error_row())
+        if self.rows and self._first_error_row() in self._visible_indices:
+            self.table.selectRow(self._visible_indices.index(self._first_error_row()))
 
     # ------------------------------------------------------------------ #
     # Hiển thị
@@ -421,8 +454,73 @@ class JsonExtractDialog(ResizableDialog):
                 "lại hoặc xóa dòng đó, bấm “Lưu” rồi nhập lại ở Bước 3."
             )
 
-        self.table.setRowCount(len(self.rows))
+        self._refresh_table()
+
+    def _sort_by(self, column: int) -> None:
+        if column == self._sort_column:
+            self._sort_ascending = not self._sort_ascending
+        else:
+            self._sort_column = column
+            self._sort_ascending = True
+        self._refresh_table()
+
+    def _sort_value(self, index: int):
+        row = self.rows[index]
+        cells = self._row_cells(index, row, classify_doc_type(row.get("loai_chung_tu")))
+        if self._sort_column == 0:
+            try:
+                return (0, int(cells[0]))
+            except ValueError:
+                return (1, cells[0].casefold())
+        if self._sort_column == 4:
+            parsed = parse_date(match_date_of(row))
+            return (0, parsed) if parsed else (1, "")
+        if self._sort_column == 6:
+            raw = row.get("so_tan") if classify_doc_type(row.get("loai_chung_tu")) in (DOC_SCALE, DOC_BILL) and row.get("so_tan") not in (None, "") else row.get("tong_tien")
+            value = parse_number(raw)
+            return (0, value) if value is not None else (1, 0)
+        return (0, cells[self._sort_column].casefold())
+
+    def _refresh_table(self, *_args) -> None:
+        current = self._visible_indices[self.table.currentRow()] if (
+            hasattr(self, "table") and 0 <= self.table.currentRow() < len(self._visible_indices)
+        ) else None
+        wanted_status = self.status_filter.currentText()
+        wanted_type = self.type_filter.currentData()
+        query = self.search.text().strip().casefold()
+        visible = []
         for index, row in enumerate(self.rows):
+            doc_type = classify_doc_type(row.get("loai_chung_tu"))
+            warnings = _warning_count(row.get("canh_bao"))
+            needs_check = bool(self.row_errors[index]) or (
+                bool(row.get("trang_thai")) and str(row.get("trang_thai")).strip().upper() != "OK"
+            )
+            if wanted_status == "Cần kiểm tra" and not needs_check:
+                continue
+            if wanted_status == "Sẵn sàng" and needs_check:
+                continue
+            if wanted_status == "Có cảnh báo" and not warnings:
+                continue
+            if wanted_type != "ALL" and (
+                (wanted_type == "OTHER" and doc_type in (DOC_EXPENSE, DOC_SCALE, DOC_BILL))
+                or (wanted_type != "OTHER" and doc_type != wanted_type)
+            ):
+                continue
+            if query and query not in " ".join(map(str, self._row_cells(index, row, doc_type))).casefold():
+                continue
+            visible.append(index)
+        if self._sort_column in (4, 6):
+            filled = [index for index in visible if self._sort_value(index)[0] == 0]
+            blank = [index for index in visible if self._sort_value(index)[0] != 0]
+            filled.sort(key=self._sort_value, reverse=not self._sort_ascending)
+            visible = filled + blank
+        else:
+            visible.sort(key=self._sort_value, reverse=not self._sort_ascending)
+        self._visible_indices = visible
+        self.table.blockSignals(True)
+        self.table.setRowCount(len(visible))
+        for table_row, index in enumerate(visible):
+            row = self.rows[index]
             reason = self.row_errors[index]
             doc_type = classify_doc_type(row.get("loai_chung_tu"))
             warnings = _warning_count(row.get("canh_bao"))
@@ -437,7 +535,13 @@ class JsonExtractDialog(ResizableDialog):
                     item.setForeground(ERROR_FG)
                 elif needs_check or warnings:
                     item.setBackground(WARN_BG)
-                self.table.setItem(index, col, item)
+                self.table.setItem(table_row, col, item)
+        self.table.blockSignals(False)
+        if visible:
+            self.table.selectRow(visible.index(current) if current in visible else 0)
+        self.table.horizontalHeader().setSortIndicator(
+            self._sort_column, Qt.AscendingOrder if self._sort_ascending else Qt.DescendingOrder
+        )
 
     def _row_cells(
         self, index: int, row: Dict[str, Any], doc_type: str
@@ -445,7 +549,9 @@ class JsonExtractDialog(ResizableDialog):
         stt = row.get("stt_hien_thi")
         return [
             str(stt if stt not in (None, "") else index + 1),
-            str(row.get("loai_chung_tu") or "—"),
+            {DOC_EXPENSE: "Khoản chi", DOC_SCALE: "Phiếu cân", DOC_BILL: "Bill"}.get(
+                doc_type, str(row.get("loai_chung_tu") or "—")
+            ),
             str(row.get("file_nguon") or ""),
             str(row.get("so_container") or ""),
             _display_date(match_date_of(row)),
@@ -479,13 +585,13 @@ class JsonExtractDialog(ResizableDialog):
         return 0
 
     def _selected_index(self) -> Optional[int]:
-        index = self.table.currentRow()
-        if index < 0 or index >= len(self.rows):
+        table_row = self.table.currentRow()
+        if table_row < 0 or table_row >= len(self._visible_indices):
             notify.info(
                 self, "Chưa chọn dòng", "Hãy chọn một dòng trong bảng trước."
             )
             return None
-        return index
+        return self._visible_indices[table_row]
 
     # ------------------------------------------------------------------ #
     # Thao tác
@@ -503,7 +609,8 @@ class JsonExtractDialog(ResizableDialog):
         self.row_errors[index] = ""
         self._dirty = True
         self._refresh()
-        self.table.selectRow(index)
+        if index in self._visible_indices:
+            self.table.selectRow(self._visible_indices.index(index))
 
     @Slot()
     def delete_row(self) -> None:
@@ -528,8 +635,9 @@ class JsonExtractDialog(ResizableDialog):
         self.row_errors.pop(index)
         self._dirty = True
         self._refresh()
-        if self.rows:
-            self.table.selectRow(min(index, len(self.rows) - 1))
+        if self._visible_indices:
+            next_row = next((row for row, source_index in enumerate(self._visible_indices) if source_index >= index), len(self._visible_indices) - 1)
+            self.table.selectRow(next_row)
 
     @Slot()
     def save(self) -> None:
@@ -691,6 +799,156 @@ class ConflictDialog(ResizableDialog):
         }
 
 
+class _PasteTable(QTableWidget):
+    """Dán nhiều ô từ Excel vào bảng sửa nhanh."""
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.matches(QKeySequence.Paste):
+            start_row = max(0, self.currentRow())
+            start_col = max(1, self.currentColumn())
+            for row_offset, line in enumerate(QApplication.clipboard().text().splitlines()):
+                if start_row + row_offset >= self.rowCount():
+                    break
+                for col_offset, value in enumerate(line.split("\t")):
+                    col = start_col + col_offset
+                    if col >= self.columnCount():
+                        break
+                    item = self.item(start_row + row_offset, col)
+                    if item is not None:
+                        item.setText(value.strip())
+            return
+        super().keyPressEvent(event)
+
+
+class BulkQuickEditDialog(ResizableDialog):
+    def __init__(self, issues: List[ImportIssue], payload: Dict[str, Any], parent=None):
+        super().__init__(parent)
+        self.issues = issues
+        self.payload = payload
+        self.changes: Dict[int, tuple[str, str]] = {}
+        self.setWindowTitle("Sửa nhanh nhiều dòng")
+        self.resize(760, 570)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Sửa thông tin để ghép lại {len(issues)} dòng"))
+        note = QLabel("Sửa ngày đóng, container; có thể dán nhiều ô từ Excel. Phần mềm sẽ kiểm tra lại từng dòng sau khi áp dụng.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self.table = _PasteTable(len(issues), 3)
+        self.table.setHorizontalHeaderLabels(["Chứng từ", "Ngày đóng", "Container"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        rows = payload.get("du_lieu_boc_tach") or []
+        for table_row, issue in enumerate(issues):
+            index = issue.json_indexes[0]
+            source = rows[index]
+            label = QTableWidgetItem(issue.reference or issue.doc_label)
+            label.setFlags(label.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(table_row, 0, label)
+            self.table.setItem(table_row, 1, QTableWidgetItem(_display_date(source.get("ngay_dong"))))
+            self.table.setItem(table_row, 2, QTableWidgetItem(str(source.get("so_container") or "")))
+        layout.addWidget(self.table, stretch=1)
+        actions = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        actions.button(QDialogButtonBox.Ok).setText("Kiểm tra và áp dụng")
+        actions.button(QDialogButtonBox.Cancel).setText("Hủy")
+        actions.accepted.connect(self._accept)
+        actions.rejected.connect(self.reject)
+        layout.addWidget(actions)
+
+    def _accept(self) -> None:
+        for row, issue in enumerate(self.issues):
+            date_text = self.table.item(row, 1).text().strip()
+            container = self.table.item(row, 2).text().strip().upper()
+            if date_text and parse_date(date_text) is None:
+                notify.warning(self, "Ngày chưa hợp lệ", f"Dòng {row + 1}: hãy kiểm tra lại ngày đóng.")
+                return
+            self.changes[issue.json_indexes[0]] = (date_text, container)
+        self.accept()
+
+
+class BulkCandidateDialog(ResizableDialog):
+    def __init__(self, issues: List[ImportIssue], candidates: List[ImportCandidate], parent=None):
+        super().__init__(parent)
+        self.choice = ""
+        self.setWindowTitle("Chọn cùng một kết quả ghép")
+        self.resize(800, 550)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Áp dụng cho {len(issues)} dòng đã chọn"))
+        self.options = QComboBox()
+        for candidate in candidates:
+            self.options.addItem(candidate.label.replace("SQT", "số quyết toán"), candidate.candidate_id)
+        layout.addWidget(self.options)
+        table = QTableWidget(len(issues), 3)
+        table.setHorizontalHeaderLabels(["Chứng từ", "Container", "Vấn đề"])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        for row, issue in enumerate(issues):
+            for col, value in enumerate((issue.reference or issue.doc_label, issue.container, issue.title.replace("SQT", "số quyết toán"))):
+                table.setItem(row, col, QTableWidgetItem(value))
+        layout.addWidget(table, stretch=1)
+        layout.addWidget(QLabel("Chỉ những dòng trong bảng sẽ được thay đổi."))
+        actions = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        actions.button(QDialogButtonBox.Ok).setText("Áp dụng cho các dòng này")
+        actions.accepted.connect(self._accept)
+        actions.rejected.connect(self.reject)
+        layout.addWidget(actions)
+
+    def _accept(self) -> None:
+        self.choice = str(self.options.currentData() or "")
+        if self.choice:
+            self.accept()
+
+
+class BulkFieldDialog(ResizableDialog):
+    def __init__(self, issues: List[ImportIssue], parent=None):
+        super().__init__(parent)
+        self.modes: Dict[str, str] = {}
+        self.setWindowTitle("Chọn dữ liệu cho nhiều dòng")
+        self.resize(900, 590)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Chọn cách xử lý các trường khác nhau trong {len(issues)} dòng"))
+        note = QLabel("Mỗi trường cần một lựa chọn. Hãy xem giá trị của từng dòng trước khi áp dụng chung.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        names = sorted({conflict.field_name for issue in issues for conflict in issue.conflicts})
+        self.combos: Dict[str, QComboBox] = {}
+        choices = QTableWidget(len(names), 3)
+        choices.setHorizontalHeaderLabels(["Trường", "Số dòng", "Cách xử lý"])
+        choices.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        for row, name in enumerate(names):
+            choices.setItem(row, 0, QTableWidgetItem(name))
+            count = sum(any(c.field_name == name for c in issue.conflicts) for issue in issues)
+            choices.setItem(row, 1, QTableWidgetItem(str(count)))
+            combo = QComboBox()
+            combo.addItem("Chọn cách xử lý", "")
+            combo.addItem("Giữ dữ liệu đang có", "CURRENT")
+            combo.addItem("Dùng dữ liệu mới", "NEW")
+            choices.setCellWidget(row, 2, combo)
+            self.combos[name] = combo
+        layout.addWidget(choices)
+        preview = QTableWidget(sum(len(i.conflicts) for i in issues), 4)
+        preview.setHorizontalHeaderLabels(["Chứng từ", "Trường", "Hiện tại", "Dữ liệu mới"])
+        preview.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        preview.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        row = 0
+        for issue in issues:
+            for conflict in issue.conflicts:
+                for col, value in enumerate((issue.reference or issue.doc_label, conflict.field_name, _display_value(conflict.current_value), _display_value(conflict.new_value))):
+                    preview.setItem(row, col, QTableWidgetItem(value))
+                row += 1
+        layout.addWidget(preview, stretch=1)
+        actions = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        actions.button(QDialogButtonBox.Ok).setText("Áp dụng cho các dòng này")
+        actions.accepted.connect(self._accept)
+        actions.rejected.connect(self.reject)
+        layout.addWidget(actions)
+
+    def _accept(self) -> None:
+        self.modes = {name: str(combo.currentData() or "") for name, combo in self.combos.items()}
+        if not all(self.modes.values()):
+            notify.warning(self, "Chưa chọn đủ", "Hãy chọn cách xử lý cho từng trường.")
+            return
+        self.accept()
+
+
 class ImportResolutionDialog(ResizableDialog):
     """Cửa sổ duy nhất để xử lý mọi vấn đề trước khi ghi file Hàng ngày."""
 
@@ -710,6 +968,10 @@ class ImportResolutionDialog(ResizableDialog):
         self._dirty = False
         self._reviewing = False
         self._visible_issue_ids: List[str] = []
+        self._selected_issue_ids: set[str] = set()
+        self._bulk_undo: Optional[tuple[Dict[str, IssueResolution], Dict[str, Any], set[str]]] = None
+        self._sort_column = 1
+        self._sort_ascending = True
         self._candidate_group: Optional[QButtonGroup] = None
 
         self.setWindowTitle("Xử lý dữ liệu trước khi nhập")
@@ -719,9 +981,7 @@ class ImportResolutionDialog(ResizableDialog):
         root = QVBoxLayout(self)
         title = QLabel("Xử lý dữ liệu trước khi nhập")
         title.setStyleSheet("font-size: 18pt; font-weight: 700; color: #111827;")
-        subtitle = QLabel(
-            "Kiểm tra và xử lý các dòng có vấn đề. File Excel chưa được thay đổi."
-        )
+        subtitle = QLabel("Chọn một hoặc nhiều dòng để xử lý. File theo dõi chưa được thay đổi.")
         subtitle.setObjectName("hintText")
         root.addWidget(title)
         root.addWidget(subtitle)
@@ -745,41 +1005,86 @@ class ImportResolutionDialog(ResizableDialog):
         left.setObjectName("card")
         left_layout = QVBoxLayout(left)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Tìm theo container, SQT, chứng từ...")
+        self.search.setPlaceholderText("Tìm theo container, số quyết toán, chứng từ...")
         self.search.textChanged.connect(lambda _text: self._refresh_issue_table())
         left_layout.addWidget(self.search)
         self.filter_combo = QComboBox()
         self.filter_combo.addItem("Tất cả", "ALL")
         self.filter_combo.addItem("Chưa xử lý", "PENDING")
         self.filter_combo.addItem("Đã xử lý", "DONE")
-        self.filter_combo.addItem("Bỏ qua", "SKIP")
+        self.filter_combo.addItem("Để xử lý sau", "SKIP")
         self.filter_combo.currentIndexChanged.connect(
             lambda _index: self._refresh_issue_table()
         )
         left_layout.addWidget(self.filter_combo)
 
-        self.issue_table = QTableWidget(0, 5)
+        self.kind_filter = QComboBox()
+        self.kind_filter.addItem("Mọi vấn đề", "ALL")
+        for kind, label in (
+            (ISSUE_NO_TARGET, "Không tìm thấy số quyết toán"),
+            (ISSUE_MISSING_CLOSE_DATE, "Thiếu ngày đóng"),
+            (ISSUE_MULTIPLE_TARGETS, "Nhiều số quyết toán phù hợp"),
+            (ISSUE_MULTIPLE_BILLS, "Nhiều Bill phù hợp"),
+            (ISSUE_FIELD_CONFLICT, "Dữ liệu khác nhau"),
+        ):
+            self.kind_filter.addItem(label, kind)
+        self.kind_filter.currentIndexChanged.connect(self._refresh_issue_table)
+        left_layout.addWidget(self.kind_filter)
+
+        selection_row = QHBoxLayout()
+        self.btn_select_visible = QPushButton("Chọn tất cả đang hiện")
+        self.btn_clear_selection = QPushButton("Bỏ chọn")
+        self.btn_select_visible.clicked.connect(self._select_visible_issues)
+        self.btn_clear_selection.clicked.connect(self._clear_issue_selection)
+        selection_row.addWidget(self.btn_select_visible)
+        selection_row.addWidget(self.btn_clear_selection)
+        selection_row.addStretch(1)
+        left_layout.addLayout(selection_row)
+
+        self.issue_table = QTableWidget(0, 7)
         self.issue_table.setHorizontalHeaderLabels(
-            ["STT", "Chứng từ", "Container", "Vấn đề", "Trạng thái"]
+            ["Chọn", "STT", "Chứng từ", "Số chứng từ", "Container", "Vấn đề", "Trạng thái"]
         )
         self.issue_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.issue_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.issue_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.issue_table.setAlternatingRowColors(True)
         self.issue_table.verticalHeader().setVisible(False)
-        self.issue_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeToContents
-        )
+        self.issue_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.issue_table.horizontalHeader().setStretchLastSection(True)
+        for column, width in enumerate((47, 48, 90, 105, 125, 180)):
+            self.issue_table.setColumnWidth(column, width)
+        self.issue_table.horizontalHeader().setSortIndicatorShown(True)
+        self.issue_table.horizontalHeader().sectionClicked.connect(self._sort_issues_by)
+        self.issue_table.itemChanged.connect(self._check_issue_changed)
         self.issue_table.itemSelectionChanged.connect(self._show_selected_issue)
         left_layout.addWidget(self.issue_table, stretch=1)
+        self.lbl_visible = QLabel()
+        self.lbl_visible.setObjectName("hintText")
+        left_layout.addWidget(self.lbl_visible)
 
         self.detail_frame = QFrame()
         self.detail_frame.setObjectName("card")
         self.detail_layout = QVBoxLayout(self.detail_frame)
-        body.addWidget(left, 43)
-        body.addWidget(self.detail_frame, 57)
+        body.addWidget(left, 59)
+        body.addWidget(self.detail_frame, 41)
         root.addLayout(body, stretch=1)
+
+        bulk_row = QHBoxLayout()
+        self.lbl_selected = QLabel("Chưa chọn dòng nào")
+        self.lbl_selected.setObjectName("hintText")
+        self.btn_bulk = QPushButton("Xử lý hàng loạt ▾")
+        self.btn_bulk.clicked.connect(self._show_bulk_menu)
+        self.btn_defer_selected = QPushButton("Để xử lý sau")
+        self.btn_defer_selected.clicked.connect(self._defer_selected_issues)
+        self.btn_undo_bulk = QPushButton("Hoàn tác")
+        self.btn_undo_bulk.clicked.connect(self._undo_last_bulk)
+        bulk_row.addWidget(self.lbl_selected)
+        bulk_row.addStretch(1)
+        bulk_row.addWidget(self.btn_bulk)
+        bulk_row.addWidget(self.btn_defer_selected)
+        bulk_row.addWidget(self.btn_undo_bulk)
+        root.addLayout(bulk_row)
 
         footer = QHBoxLayout()
         self.lbl_progress = QLabel()
@@ -840,9 +1145,9 @@ class ImportResolutionDialog(ResizableDialog):
         pending = sum(self._issue_status(issue) == "PENDING" for issue in issues)
         done = sum(self._issue_status(issue) == "DONE" for issue in issues)
         skipped = sum(self._issue_status(issue) == "SKIP" for issue in issues)
-        self.lbl_total.setText(f"{len(issues)}  cần xử lý")
+        self.lbl_total.setText(f"{len(issues)}  vấn đề trong lô")
         self.lbl_done.setText(f"{done}  đã xử lý")
-        self.lbl_skipped.setText(f"{skipped}  bỏ qua")
+        self.lbl_skipped.setText(f"{skipped}  để sau")
         self.lbl_pending.setText(f"{pending}  chưa xử lý")
         self.lbl_progress.setText(
             f"Đã quyết định {done + skipped}/{len(issues)} dòng • "
@@ -850,9 +1155,32 @@ class ImportResolutionDialog(ResizableDialog):
         )
         self.btn_continue.setEnabled(pending == 0)
         self.btn_continue.setToolTip(
-            "" if pending == 0 else "Cần xử lý hoặc bỏ qua tất cả các dòng trước."
+            "" if pending == 0 else "Cần xử lý hoặc để sau tất cả các dòng trước."
         )
+        self._selected_issue_ids.intersection_update(issue.issue_id for issue in issues)
         self._refresh_issue_table(preferred_issue_id)
+
+    def _sort_issues_by(self, column: int) -> None:
+        if column == 0:
+            return
+        if column == self._sort_column:
+            self._sort_ascending = not self._sort_ascending
+        else:
+            self._sort_column = column
+            self._sort_ascending = True
+        self._refresh_issue_table()
+
+    def _issue_sort_value(self, issue: ImportIssue, original_order: int):
+        status = self._issue_status(issue)
+        values = {
+            1: original_order,
+            2: issue.doc_label.casefold(),
+            3: issue.reference.casefold(),
+            4: issue.container.casefold(),
+            5: issue.title.casefold(),
+            6: {"PENDING": 0, "DONE": 1, "SKIP": 2}[status],
+        }
+        return values.get(self._sort_column, original_order)
 
     @Slot()
     def _refresh_issue_table(self, preferred_issue_id: str = "") -> None:
@@ -861,10 +1189,13 @@ class ImportResolutionDialog(ResizableDialog):
         current = preferred_issue_id or self._selected_issue_id()
         query = self.search.text().strip().lower()
         wanted = self.filter_combo.currentData()
+        wanted_kind = self.kind_filter.currentData()
         visible: List[ImportIssue] = []
         for issue in self.analysis.issues:
             status = self._issue_status(issue)
             if wanted != "ALL" and status != wanted:
+                continue
+            if wanted_kind != "ALL" and issue.kind != wanted_kind:
                 continue
             haystack = " ".join(
                 [issue.doc_label, issue.container, issue.title, issue.reference]
@@ -872,6 +1203,12 @@ class ImportResolutionDialog(ResizableDialog):
             if query and query not in haystack:
                 continue
             visible.append(issue)
+
+        order = {issue.issue_id: index for index, issue in enumerate(self.analysis.issues)}
+        visible.sort(
+            key=lambda issue: self._issue_sort_value(issue, order[issue.issue_id]),
+            reverse=not self._sort_ascending,
+        )
 
         self._visible_issue_ids = [issue.issue_id for issue in visible]
         self.issue_table.blockSignals(True)
@@ -882,16 +1219,21 @@ class ImportResolutionDialog(ResizableDialog):
             status_text = {
                 "PENDING": "Chưa xử lý",
                 "DONE": "Đã xử lý",
-                "SKIP": "Bỏ qua",
+                "SKIP": "Để sau",
             }[status]
             values = [
-                str(row_index + 1),
+                str(order[issue.issue_id] + 1),
                 issue.doc_label,
+                issue.reference or "—",
                 issue.container or "—",
-                issue.title,
+                issue.title.replace("SQT", "số quyết toán"),
                 status_text,
             ]
-            for column, value in enumerate(values):
+            check = QTableWidgetItem()
+            check.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+            check.setCheckState(Qt.Checked if issue.issue_id in self._selected_issue_ids else Qt.Unchecked)
+            self.issue_table.setItem(row_index, 0, check)
+            for column, value in enumerate(values, start=1):
                 item = QTableWidgetItem(value)
                 if status == "PENDING":
                     item.setBackground(ERROR_BG if row_index == 0 else WARN_BG)
@@ -907,6 +1249,11 @@ class ImportResolutionDialog(ResizableDialog):
         else:
             self.issue_table.clearSelection()
         self.issue_table.blockSignals(False)
+        self.issue_table.horizontalHeader().setSortIndicator(
+            self._sort_column, Qt.AscendingOrder if self._sort_ascending else Qt.DescendingOrder
+        )
+        self.lbl_visible.setText(f"Đang hiện {len(visible)}/{len(self.analysis.issues)} dòng")
+        self._refresh_bulk_state()
         if visible:
             self._show_issue(visible[selected_row])
         else:
@@ -917,6 +1264,152 @@ class ImportResolutionDialog(ResizableDialog):
         if 0 <= row < len(self._visible_issue_ids):
             return self._visible_issue_ids[row]
         return ""
+
+    def _check_issue_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() != 0 or not (0 <= item.row() < len(self._visible_issue_ids)):
+            return
+        issue_id = self._visible_issue_ids[item.row()]
+        if item.checkState() == Qt.Checked:
+            self._selected_issue_ids.add(issue_id)
+        else:
+            self._selected_issue_ids.discard(issue_id)
+        self._refresh_bulk_state()
+
+    def _select_visible_issues(self) -> None:
+        self._selected_issue_ids.update(self._visible_issue_ids)
+        self._refresh_issue_table()
+
+    def _clear_issue_selection(self) -> None:
+        self._selected_issue_ids.clear()
+        self._refresh_issue_table()
+
+    def _selected_pending_issues(self) -> List[ImportIssue]:
+        return [issue for issue in self.analysis.issues if issue.issue_id in self._selected_issue_ids and self._issue_status(issue) == "PENDING"]
+
+    def _refresh_bulk_state(self) -> None:
+        selected = len(self._selected_issue_ids)
+        hidden = len(self._selected_issue_ids - set(self._visible_issue_ids))
+        self.lbl_selected.setText(
+            f"Đã chọn {selected} dòng" + (f" · {hidden} dòng đang ẩn bởi bộ lọc" if hidden else "")
+            if selected else "Chưa chọn dòng nào"
+        )
+        enabled = bool(self._selected_pending_issues())
+        self.btn_bulk.setEnabled(enabled)
+        self.btn_defer_selected.setEnabled(enabled)
+        self.btn_undo_bulk.setEnabled(self._bulk_undo is not None)
+
+    def _snapshot_bulk(self) -> None:
+        self._bulk_undo = (
+            copy.deepcopy(self.resolutions), copy.deepcopy(self.payload),
+            set(self._selected_issue_ids),
+        )
+
+    def _undo_last_bulk(self) -> None:
+        if self._bulk_undo is None:
+            return
+        self.resolutions, self.payload, self._selected_issue_ids = self._bulk_undo
+        self._bulk_undo = None
+        self._dirty = True
+        self._queue_reanalysis()
+
+    def _build_bulk_menu(self) -> QMenu:
+        menu = QMenu(self)
+        pending = self._selected_pending_issues()
+        edit_ids = tuple(i.issue_id for i in pending if i.kind in (ISSUE_NO_TARGET, ISSUE_MISSING_CLOSE_DATE))
+        if edit_ids:
+            action = menu.addAction(f"Sửa nhanh thông tin để ghép lại · {len(edit_ids)} dòng")
+            action.triggered.connect(lambda _checked=False, ids=edit_ids: self._bulk_quick_edit(ids))
+        for kind, label in (
+            (ISSUE_MULTIPLE_TARGETS, "Chọn số quyết toán phù hợp"),
+            (ISSUE_MULTIPLE_BILLS, "Chọn Bill phù hợp"),
+            (ISSUE_FIELD_CONFLICT, "Chọn cách xử lý dữ liệu khác nhau"),
+        ):
+            ids = tuple(i.issue_id for i in pending if i.kind == kind)
+            if ids:
+                action = menu.addAction(f"{label} · {len(ids)} dòng")
+                handler = self._bulk_fields if kind == ISSUE_FIELD_CONFLICT else self._bulk_candidates
+                action.triggered.connect(lambda _checked=False, ids=ids, handler=handler: handler(ids))
+        if pending:
+            menu.addSeparator()
+            action = menu.addAction(f"Để cả {len(pending)} dòng chưa xử lý đã chọn lại sau")
+            action.triggered.connect(self._defer_selected_issues)
+        return menu
+
+    def _show_bulk_menu(self) -> None:
+        menu = self._build_bulk_menu()
+        menu.exec(self.btn_bulk.mapToGlobal(self.btn_bulk.rect().bottomLeft()))
+
+    def _issues_for_ids(self, ids: tuple[str, ...]) -> List[ImportIssue]:
+        return [issue for issue in self._selected_pending_issues() if issue.issue_id in ids]
+
+    def _bulk_quick_edit(self, ids: tuple[str, ...]) -> None:
+        issues = [issue for issue in self._issues_for_ids(ids) if issue.json_indexes]
+        if not issues:
+            return
+        dialog = BulkQuickEditDialog(issues, self.payload, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self._snapshot_bulk()
+        rows = self.payload.get("du_lieu_boc_tach") or []
+        for index, (date_text, container) in dialog.changes.items():
+            rows[index]["ngay_dong"] = date_text
+            rows[index]["so_container"] = container
+        self._dirty = True
+        self._queue_reanalysis()
+
+    def _bulk_candidates(self, ids: tuple[str, ...]) -> None:
+        issues = self._issues_for_ids(ids)
+        if not issues:
+            return
+        common_ids = set(candidate.candidate_id for candidate in issues[0].candidates)
+        for issue in issues[1:]:
+            common_ids.intersection_update(candidate.candidate_id for candidate in issue.candidates)
+        candidates = [candidate for candidate in issues[0].candidates if candidate.candidate_id in common_ids]
+        if not candidates:
+            notify.info(self, "Không có lựa chọn chung", "Các dòng này không có cùng một kết quả ghép hợp lệ. Hãy chọn từng dòng hoặc chọn một nhóm nhỏ hơn.")
+            return
+        dialog = BulkCandidateDialog(issues, candidates, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self._snapshot_bulk()
+        for issue in issues:
+            self.resolutions[issue.issue_id] = IssueResolution(issue.issue_id, RESOLUTION_SELECT, candidate_id=dialog.choice)
+        self._selected_issue_ids.difference_update(ids)
+        self._dirty = True
+        self._queue_reanalysis()
+
+    def _bulk_fields(self, ids: tuple[str, ...]) -> None:
+        issues = self._issues_for_ids(ids)
+        if not issues:
+            return
+        dialog = BulkFieldDialog(issues, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self._snapshot_bulk()
+        for issue in issues:
+            choices = {conflict.conflict_id: {"mode": dialog.modes[conflict.field_name], "value": ""} for conflict in issue.conflicts}
+            self.resolutions[issue.issue_id] = IssueResolution(issue.issue_id, RESOLUTION_FIELDS, field_choices=choices)
+        self._selected_issue_ids.difference_update(ids)
+        self._dirty = True
+        self._queue_reanalysis()
+
+    def _defer_selected_issues(self) -> None:
+        issues = self._selected_pending_issues()
+        if not issues:
+            return
+        confirmed = notify.confirm(
+            self, "Để xử lý sau",
+            f"Để {len(issues)} dòng lại xử lý sau? Các dòng này sẽ không được nhập trong lần này và sẽ xuất hiện ở danh sách chờ.",
+            confirm_text="Để xử lý sau", cancel_text="Quay lại",
+        )
+        if not confirmed:
+            return
+        self._snapshot_bulk()
+        for issue in issues:
+            self.resolutions[issue.issue_id] = IssueResolution(issue.issue_id, RESOLUTION_SKIP)
+        self._selected_issue_ids.difference_update(issue.issue_id for issue in issues)
+        self._dirty = True
+        self._queue_reanalysis()
 
     @Slot()
     def _show_selected_issue(self) -> None:
@@ -949,7 +1442,7 @@ class ImportResolutionDialog(ResizableDialog):
 
     def _show_issue(self, issue: ImportIssue) -> None:
         self._clear_layout(self.detail_layout)
-        header = QLabel(issue.title)
+        header = QLabel(issue.title.replace("SQT", "số quyết toán"))
         header.setStyleSheet("font-size: 14pt; font-weight: 700; color: #111827;")
         reason = QLabel(issue.reason)
         reason.setObjectName("noteText")
@@ -981,7 +1474,7 @@ class ImportResolutionDialog(ResizableDialog):
             btn_reset.clicked.connect(lambda: self._reset_issue(issue))
             action_row.addWidget(btn_reset)
         btn_edit = QPushButton("Chỉnh sửa dòng")
-        btn_skip = QPushButton("Bỏ qua dòng này")
+        btn_skip = QPushButton("Để xử lý sau")
         btn_edit.clicked.connect(lambda: self._show_editor(issue))
         btn_skip.clicked.connect(lambda: self._skip_issue(issue))
         action_row.addWidget(btn_edit)
@@ -996,7 +1489,7 @@ class ImportResolutionDialog(ResizableDialog):
         else:
             note = QLabel(
                 "Dòng này cần được chỉnh sửa để có thể ghép dữ liệu, hoặc chọn "
-                "“Bỏ qua dòng này” để giữ lại xử lý sau."
+                "“Để xử lý sau” nếu chưa đủ thông tin."
             )
             note.setWordWrap(True)
             note.setObjectName("hintText")
@@ -1005,7 +1498,7 @@ class ImportResolutionDialog(ResizableDialog):
 
     def _show_candidates(self, issue: ImportIssue) -> None:
         title = QLabel(
-            "Chọn một dòng Excel làm dữ liệu đích"
+            "Chọn số quyết toán phù hợp"
             if any(item.kind == "INFO_ROW" for item in issue.candidates)
             else "Chọn Bill phù hợp"
         )
@@ -1018,10 +1511,10 @@ class ImportResolutionDialog(ResizableDialog):
             card = QFrame()
             card.setObjectName("guideBox")
             layout = QVBoxLayout(card)
-            radio = QRadioButton(candidate.label)
+            radio = QRadioButton(candidate.label.replace("SQT", "số quyết toán"))
             radio.setChecked(candidate.candidate_id == selected_id)
             details = " • ".join(
-                f"{key}: {_display_value(value)}"
+                f"{key.replace('SQT PM', 'Số quyết toán')}: {_display_value(value)}"
                 for key, value in candidate.values.items()
                 if value not in (None, "")
             )
@@ -1274,7 +1767,7 @@ class ImportResolutionDialog(ResizableDialog):
             f"• Dòng quyết toán mới: {self.analysis.new_info_count}\n"
             f"• Dòng quyết toán cập nhật: {self.analysis.updated_info_count}\n"
             f"• Dòng khoản chi: {len(self.analysis.expense_changes)}\n"
-            f"• Dòng bỏ qua và giữ lại xử lý sau: {self.analysis.skipped_count}\n\n"
+            f"• Dòng để xử lý sau: {self.analysis.skipped_count}\n\n"
             "File Excel chỉ được thay đổi sau khi bấm “Xác nhận nhập”."
         )
         text.setWordWrap(True)
@@ -1329,6 +1822,9 @@ class ImportResolutionDialog(ResizableDialog):
                 saved_analysis.output_path,
                 saved_analysis.daily_path,
                 saved_analysis.resolutions,
+            )
+            self.service.save_work_in_progress(
+                saved_analysis, saved_analysis.resolutions
             )
         except DailyImportError as exc:
             notify.error(self, "Không lưu được xử lý", str(exc))

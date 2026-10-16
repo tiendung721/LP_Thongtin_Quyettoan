@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from openpyxl import Workbook, load_workbook
 
@@ -775,6 +776,117 @@ class DailyImportServiceTests(unittest.TestCase):
         self.assertEqual(self._expense_sqt_column(), [])
         with open(self.output, encoding="utf-8") as f:
             self.assertEqual(len(json.load(f)["du_lieu_boc_tach"]), 1)
+
+    def test_deferred_rows_survive_a_new_batch_and_can_be_imported_later(self) -> None:
+        self._write_output_rows(
+            {
+                "file_nguon": "cost-orphan.jpg",
+                "ma_md5_file": "cost-orphan",
+                "loai_chung_tu": "Khoản chi",
+                "ngay_chay": "20/06/2026",
+                "so_container": "WXYZ1234567",
+                "so_hd": "77",
+                "don_gia": 1_500_000,
+                "tong_tien": 42_000_000,
+            }
+        )
+        first = self.service.analyze(str(self.output), str(self.daily), 1)
+        skipped = self.service.analyze(
+            str(self.output), str(self.daily), 1,
+            resolutions={first.issues[0].issue_id: IssueResolution(first.issues[0].issue_id, RESOLUTION_SKIP)},
+        )
+        summary = self.service.commit(skipped)
+        self.assertFalse(summary.wrote_workbook)
+        self.assertEqual(self.db.count_deferred_rows(), 1)
+
+        # A new extraction replaces the original temporary JSON and is analyzed.
+        self._write_output_rows()
+        self.service.analyze(str(self.output), str(self.daily), 2)
+        reopened_db = Database(str(self.root / "state.db"))
+        reopened_db.init_db()
+        reopened_service = DailyImportService(reopened_db, logging.getLogger("daily-reopened"))
+        batch = reopened_db.list_deferred_batches()[0]
+        cache = Path(reopened_service.open_deferred_batch(batch["id"]))
+        payload = json.loads(cache.read_text(encoding="utf-8"))
+        self.assertEqual(len(payload["du_lieu_boc_tach"]), 1)
+        payload["du_lieu_boc_tach"][0]["so_container"] = "EFGH1234567"
+        payload["du_lieu_boc_tach"][0]["ngay_chay"] = "03/06/2026"
+        cache.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+        resumed = reopened_service.analyze(str(cache), str(self.daily))
+        self.assertEqual(resumed.unresolved_issues, [])
+        self.assertEqual(len(resumed.expense_changes), 1)
+        reopened_service.commit(resumed)
+        self.assertEqual(reopened_db.count_deferred_rows(), 0)
+        self.assertIn(101, self._expense_sqt_column())
+
+    def test_failed_excel_write_restores_full_deferred_batch(self) -> None:
+        payload = {
+            "metadata": {},
+            "du_lieu_boc_tach": [
+                {
+                    "file_nguon": "ready.jpg", "ma_md5_file": "ready",
+                    "loai_chung_tu": "Khoản chi", "ngay_chay": "03/06/2026",
+                    "so_container": "EFGH1234567", "so_hd": "1",
+                    "don_gia": 1_500_000, "tong_tien": 42_000_000,
+                },
+                {
+                    "file_nguon": "orphan.jpg", "ma_md5_file": "orphan",
+                    "loai_chung_tu": "Khoản chi", "ngay_chay": "20/06/2026",
+                    "so_container": "WXYZ1234567", "so_hd": "2",
+                    "don_gia": 1_500_000, "tong_tien": 42_000_000,
+                },
+            ],
+        }
+        batch_id = self.db.save_deferred_batch(
+            "processed:1", "old.json", str(self.daily), payload
+        )
+        cache = self.service.open_deferred_batch(batch_id)
+        first = self.service.analyze(cache, str(self.daily))
+        self.assertEqual(len(first.issues), 1)
+        prepared = self.service.analyze(
+            cache, str(self.daily),
+            resolutions={first.issues[0].issue_id: IssueResolution(first.issues[0].issue_id, RESOLUTION_SKIP)},
+        )
+        self.assertEqual(len(prepared.expense_changes), 1)
+        with patch("app.daily_import.os.replace", side_effect=OSError("locked")):
+            with self.assertRaises(DailyImportError):
+                self.service.commit(prepared)
+        self.assertEqual(self.db.get_deferred_batch(batch_id)["row_count"], 2)
+        self.assertEqual(self._expense_sqt_column(), [])
+
+    def test_saved_draft_reopens_after_original_file_is_replaced(self) -> None:
+        self._write_output_rows(
+            {
+                "file_nguon": "unmatched.jpg", "ma_md5_file": "unmatched",
+                "loai_chung_tu": "Khoản chi", "ngay_chay": "20/06/2026",
+                "so_container": "WXYZ1234567", "so_hd": "77",
+                "don_gia": 1_500_000, "tong_tien": 42_000_000,
+            }
+        )
+        analysis = self.service.analyze(str(self.output), str(self.daily), 1)
+        issue_id = analysis.issues[0].issue_id
+        self.service.save_work_in_progress(
+            analysis, {issue_id: IssueResolution(issue_id, RESOLUTION_SKIP)}
+        )
+        self.assertEqual(self.db.count_deferred_rows(), 1)
+        self._write_output_rows()
+
+        restarted_db = Database(str(self.root / "state.db"))
+        restarted_db.init_db()
+        restarted = DailyImportService(restarted_db, logging.getLogger("draft-restarted"))
+        batch_id = restarted_db.list_deferred_batches()[0]["id"]
+        cache = restarted.open_deferred_batch(batch_id, str(self.daily))
+        resumed = restarted.analyze(cache, str(self.daily))
+        self.assertEqual(resumed.resolutions[issue_id].action, RESOLUTION_SKIP)
+        self.assertEqual(resumed.skipped_count, 1)
+        wb = load_workbook(self.daily)
+        wb.properties.title = "changed since draft"
+        wb.save(self.daily)
+        wb.close()
+        cache = restarted.open_deferred_batch(batch_id, str(self.daily))
+        refreshed = restarted.analyze(cache, str(self.daily))
+        self.assertNotIn(issue_id, refreshed.resolutions)
 
     def test_expense_matching_multiple_sqt_is_not_written(self) -> None:
         # Cùng container + cùng ngày nhưng hai dòng quyết toán -> không rõ SQT nào.

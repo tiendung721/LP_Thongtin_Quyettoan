@@ -324,6 +324,7 @@ class ImportAnalysis:
     conflict_decisions: Dict[str, bool] = field(default_factory=dict)
     skipped_staged_ids: List[int] = field(default_factory=list)
     skipped_json_indexes: List[int] = field(default_factory=list)
+    deferred_batch_id: Optional[int] = None
 
     @property
     def new_info_count(self) -> int:
@@ -356,6 +357,7 @@ class ImportSummary:
     pending_count: int = 0
     backup_path: str = ""
     status: str = "DAILY_IMPORTED"
+    wrote_workbook: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -732,6 +734,78 @@ class DailyImportService:
         self.logger = logger
         self.cargo_mappings = cargo_mappings or {}
 
+    def _deferred_file(self, batch_id: int) -> Path:
+        return Path(self.database.db_path).resolve().parent / "deferred_batches" / f"{batch_id}.json"
+
+    def _deferred_id_from_path(self, path: str) -> Optional[int]:
+        candidate = Path(path).resolve()
+        folder = self._deferred_file(0).parent
+        if candidate.parent != folder or not candidate.stem.isdecimal():
+            return None
+        batch_id = int(candidate.stem)
+        return batch_id if self.database.get_deferred_batch(batch_id) else None
+
+    def open_deferred_batch(self, batch_id: int, daily_path: Optional[str] = None) -> str:
+        """Tạo bản làm việc từ dữ liệu đã lưu, kể cả khi JSON ban đầu đã bị dọn."""
+        batch = self.database.get_deferred_batch(batch_id)
+        if batch is None:
+            raise DailyImportError("Không tìm thấy các dòng đang chờ này.")
+        path = self._deferred_file(batch_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        save_extract_payload(str(path), batch["payload"])
+        self.database.delete_import_resolution_draft(str(path))
+        target_path = daily_path or batch["daily_path"]
+        if (
+            batch["resolutions"]
+            and os.path.normcase(os.path.abspath(batch["daily_path"]))
+            == os.path.normcase(os.path.abspath(target_path))
+            and os.path.isfile(target_path)
+            and batch["daily_hash"] == file_utils.sha256_file(target_path)
+        ):
+            self.database.save_import_resolution_draft(
+                str(path), extract_payload_hash(load_extract_payload(str(path))),
+                target_path, batch["daily_hash"], batch["resolutions"],
+            )
+        return str(path)
+
+    def save_work_in_progress(
+        self, analysis: ImportAnalysis, resolutions: Dict[str, IssueResolution]
+    ) -> None:
+        """Giữ nguyên cả lô chưa nhập để nút Lưu và đóng không mất dữ liệu."""
+        payload = load_extract_payload(analysis.output_path)
+        source_key, source_name = self._deferred_identity(analysis)
+        self.database.save_deferred_batch(
+            source_key, source_name, analysis.daily_path, payload,
+            {issue_id: resolution.to_dict() for issue_id, resolution in resolutions.items()},
+            file_utils.sha256_file(analysis.daily_path),
+        )
+
+    def _deferred_identity(self, analysis: ImportAnalysis) -> Tuple[str, str]:
+        if analysis.deferred_batch_id is not None:
+            batch = self.database.get_deferred_batch(analysis.deferred_batch_id)
+            if batch is None:
+                raise DailyImportError("Danh sách chờ đã thay đổi. Hãy mở lại danh sách.")
+            return batch["source_key"], batch["source_name"]
+        key = (
+            f"processed:{analysis.processed_file_id}"
+            if analysis.processed_file_id is not None
+            else f"path:{os.path.normcase(os.path.abspath(analysis.output_path))}"
+        )
+        return key, os.path.basename(analysis.output_path)
+
+    def _save_deferred_from_analysis(self, analysis: ImportAnalysis) -> Optional[int]:
+        if not analysis.skipped_json_indexes:
+            return None
+        payload = load_extract_payload(analysis.output_path)
+        rows = payload.get("du_lieu_boc_tach") or []
+        indexes = sorted(set(analysis.skipped_json_indexes))
+        payload["du_lieu_boc_tach"] = [rows[index] for index in indexes if 0 <= index < len(rows)]
+        refresh_extract_metadata(payload)
+        source_key, source_name = self._deferred_identity(analysis)
+        return self.database.save_deferred_batch(
+            source_key, source_name, analysis.daily_path, payload
+        )
+
     @staticmethod
     def _normalize_resolutions(values: Optional[Dict[str, Any]]) -> Dict[str, IssueResolution]:
         result: Dict[str, IssueResolution] = {}
@@ -973,6 +1047,16 @@ class DailyImportService:
 
         parsed = self._read_output(output_path, payload=payload)
         snapshot = self._read_daily_snapshot(daily_path)
+        deferred_batch_id = self._deferred_id_from_path(output_path)
+        if deferred_batch_id is None:
+            source_key = (
+                f"processed:{processed_file_id}"
+                if processed_file_id is not None
+                else f"path:{os.path.normcase(os.path.abspath(output_path))}"
+            )
+            existing_batch = self.database.get_deferred_batch_by_key(source_key)
+            if existing_batch is not None:
+                deferred_batch_id = existing_batch["id"]
         analysis = ImportAnalysis(
             output_path=output_path,
             daily_path=daily_path,
@@ -980,6 +1064,7 @@ class DailyImportService:
             extracted_rows=len(parsed),
             source_hash=source_hash,
             daily_hash=daily_hash,
+            deferred_batch_id=deferred_batch_id,
         )
 
         # JSON tạm là nguồn dữ liệu duy nhất của lần nhập này: dọn hàng chờ cũ
@@ -1446,9 +1531,79 @@ class DailyImportService:
         run_id = self.database.create_import_run(
             analysis.processed_file_id, analysis.output_path, daily_path
         )
+        if not analysis.has_changes:
+            previous_deferred: Optional[Dict[str, Any]] = None
+            saved_deferred_id: Optional[int] = None
+            deleted_deferred = False
+            try:
+                if analysis.skipped_count:
+                    source_key, _source_name = self._deferred_identity(analysis)
+                    previous_deferred = self.database.get_deferred_batch_by_key(source_key)
+                    saved_deferred_id = self._save_deferred_from_analysis(analysis)
+                elif analysis.deferred_batch_id is not None:
+                    # Một dòng không tạo thay đổi Excel chưa chắc đã được nhập:
+                    # dữ liệu không hỗ trợ/không ghép được phải tiếp tục ở hàng chờ.
+                    all_accounted_for = (
+                        analysis.extracted_rows == 0
+                        or len(set(analysis.completed_staged_ids)) >= analysis.extracted_rows
+                    )
+                    if all_accounted_for:
+                        previous_deferred = self.database.get_deferred_batch(analysis.deferred_batch_id)
+                        self.database.delete_deferred_batch(analysis.deferred_batch_id)
+                        deleted_deferred = True
+                affected_md5: set[str] = set()
+                for row_id in set(analysis.completed_staged_ids):
+                    item = self.database.get_staged_row(row_id)
+                    if item:
+                        affected_md5.add(item.get("document_md5") or "")
+                        self.database.update_staged_row(row_id, state=STATE_COMPLETED)
+                for md5 in affected_md5:
+                    if md5:
+                        self.database.refresh_document_status(md5)
+                still_deferred = (
+                    analysis.deferred_batch_id is not None
+                    and self.database.get_deferred_batch(analysis.deferred_batch_id) is not None
+                )
+                current_pending = self.database.count_pending_rows()
+                status = "DAILY_IMPORT_PARTIAL" if analysis.skipped_count or still_deferred or current_pending else "DAILY_IMPORTED"
+                summary = ImportSummary(
+                    pending_count=max(self.database.count_deferred_rows(), current_pending),
+                    status=status,
+                    wrote_workbook=False,
+                )
+                self.database.finish_import_run(run_id, "COMPLETED", summary=summary.to_dict())
+                if analysis.processed_file_id is not None:
+                    self.database.update_status(
+                        analysis.processed_file_id, status, note=self._summary_note(summary)
+                    )
+                self.database.delete_import_resolution_draft(analysis.output_path)
+                return summary
+            except Exception as exc:
+                if saved_deferred_id is not None or deleted_deferred:
+                    try:
+                        if previous_deferred is not None:
+                            self.database.save_deferred_batch(
+                                previous_deferred["source_key"], previous_deferred["source_name"],
+                                previous_deferred["daily_path"], previous_deferred["payload"],
+                                previous_deferred["resolutions"], previous_deferred["daily_hash"],
+                            )
+                        elif saved_deferred_id is not None:
+                            self.database.delete_deferred_batch(saved_deferred_id)
+                    except Exception:  # noqa: BLE001
+                        self.logger.exception("Không khôi phục được danh sách chờ sau lỗi lưu.")
+                self.database.finish_import_run(run_id, "FAILED", error_message=str(exc))
+                if isinstance(exc, DailyImportError):
+                    raise
+                raise DailyImportError(f"Không lưu được các dòng chờ xử lý: {exc}") from exc
         backup_path = ""
         temp_path = ""
+        previous_deferred: Optional[Dict[str, Any]] = None
+        saved_deferred_id: Optional[int] = None
+        workbook_replaced = False
         try:
+            if analysis.skipped_json_indexes:
+                source_key, _source_name = self._deferred_identity(analysis)
+                previous_deferred = self.database.get_deferred_batch_by_key(source_key)
             wb = load_workbook(daily_path)
             self._upgrade_workbook(wb)
             expense_ws = wb[EXPENSE_SHEET]
@@ -1528,7 +1683,14 @@ class DailyImportService:
             wb.save(temp_path)
             wb.close()
             self._validate_saved_workbook(temp_path)
+            # Lưu các dòng gác lại trước khi thay file theo dõi. Dữ liệu này sống
+            # độc lập với JSON tạm, nên lô mới không thể làm mất hàng chờ cũ.
+            saved_deferred_id = self._save_deferred_from_analysis(analysis)
             os.replace(temp_path, daily_path)
+            workbook_replaced = True
+
+            if analysis.deferred_batch_id is not None and not analysis.skipped_count:
+                self.database.delete_deferred_batch(analysis.deferred_batch_id)
 
             completed_ids = sorted(set(analysis.completed_staged_ids))
             affected_md5: set[str] = set()
@@ -1542,8 +1704,9 @@ class DailyImportService:
                 if md5:
                     self.database.refresh_document_status(md5)
 
-            pending = self.database.count_pending_rows()
-            status = "DAILY_IMPORT_PARTIAL" if pending else "DAILY_IMPORTED"
+            current_pending = self.database.count_pending_rows()
+            pending = max(self.database.count_deferred_rows(), current_pending)
+            status = "DAILY_IMPORT_PARTIAL" if analysis.skipped_count or current_pending else "DAILY_IMPORTED"
             summary = ImportSummary(
                 new_info=analysis.new_info_count,
                 updated_info=analysis.updated_info_count,
@@ -1566,6 +1729,20 @@ class DailyImportService:
             self.database.delete_import_resolution_draft(analysis.output_path)
             return summary
         except Exception as exc:
+            if saved_deferred_id is not None and not workbook_replaced:
+                # Excel chưa đổi: trả danh sách chờ về nguyên trạng để lần sau
+                # vẫn còn cả những dòng vừa định nhập.
+                try:
+                    if previous_deferred is not None:
+                        self.database.save_deferred_batch(
+                            previous_deferred["source_key"], previous_deferred["source_name"],
+                            previous_deferred["daily_path"], previous_deferred["payload"],
+                            previous_deferred["resolutions"], previous_deferred["daily_hash"],
+                        )
+                    else:
+                        self.database.delete_deferred_batch(saved_deferred_id)
+                except Exception:  # noqa: BLE001
+                    self.logger.exception("Không khôi phục được danh sách chờ sau lỗi ghi Excel.")
             # Ghi theo cơ chế file tạm + os.replace (nguyên tử) nên file theo dõi
             # gốc không bị hỏng dở; chỉ cần dọn file tạm nếu lỗi.
             if temp_path and os.path.exists(temp_path):
@@ -1585,6 +1762,11 @@ class DailyImportService:
                     "DAILY_IMPORT_ERROR",
                     note=f"Lỗi nhập file theo dõi: {exc}",
                 )
+            if workbook_replaced:
+                raise DailyImportError(
+                    "File theo dõi đã được cập nhật nhưng phần mềm chưa ghi nhận xong kết quả. "
+                    "Hãy mở file theo dõi để kiểm tra trước khi thử lại."
+                ) from exc
             if isinstance(exc, DailyImportError):
                 raise
             raise DailyImportError(f"Không cập nhật được file theo dõi: {exc}") from exc
@@ -1606,6 +1788,15 @@ class DailyImportService:
                 for issue_id, resolution in resolutions.items()
             },
         )
+        batch_id = self._deferred_id_from_path(output_path)
+        if batch_id is not None:
+            batch = self.database.get_deferred_batch(batch_id)
+            if batch is not None:
+                self.database.save_deferred_batch(
+                    batch["source_key"], batch["source_name"], daily_path, payload,
+                    {issue_id: resolution.to_dict() for issue_id, resolution in resolutions.items()},
+                    file_utils.sha256_file(daily_path),
+                )
 
     # ------------------------------------------------------------------ #
     # Đọc dữ liệu
