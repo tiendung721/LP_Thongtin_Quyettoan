@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 
 from .dialogs.base_dialog import ResizableDialog
 from .dialogs.notifications import notify
+from .theme import repolish
 from .daily_import import (
     DOC_BILL,
     DOC_EXPENSE,
@@ -358,17 +359,64 @@ class JsonExtractDialog(ResizableDialog):
         layout.addWidget(self.lbl_error_hint)
 
         summary = QFrame()
-        summary.setObjectName("guideBox")
+        summary.setObjectName("extractSummary")
         summary_layout = QVBoxLayout(summary)
-        summary_layout.setContentsMargins(12, 10, 12, 10)
-        summary_layout.setSpacing(4)
-        self.lbl_summary = QLabel()
-        self.lbl_summary.setWordWrap(True)
-        self.lbl_types = QLabel()
-        self.lbl_types.setObjectName("metaText")
-        self.lbl_types.setWordWrap(True)
-        summary_layout.addWidget(self.lbl_summary)
-        summary_layout.addWidget(self.lbl_types)
+        summary_layout.setContentsMargins(8, 8, 8, 8)
+        summary_layout.setSpacing(6)
+
+        metric_row = QHBoxLayout()
+        metric_row.setSpacing(6)
+        self.summary_values: Dict[str, QLabel] = {}
+        self.summary_metrics: Dict[str, QFrame] = {}
+        for key, label, tone in (
+            ("files", "Tổng số file", "info"),
+            ("total", "Dòng bóc tách", "info"),
+            ("ok", "Dòng OK", "success"),
+            ("need_check", "Cần kiểm tra", "quiet"),
+            ("warnings", "Cảnh báo", "quiet"),
+        ):
+            metric = QFrame()
+            metric.setObjectName("extractMetric")
+            metric.setProperty("tone", tone)
+            metric_layout = QVBoxLayout(metric)
+            metric_layout.setContentsMargins(10, 5, 10, 5)
+            metric_layout.setSpacing(0)
+            value = QLabel("0")
+            value.setObjectName("extractMetricValue")
+            value.setProperty("tone", tone)
+            caption = QLabel(label)
+            caption.setObjectName("extractMetricLabel")
+            metric_layout.addWidget(value)
+            metric_layout.addWidget(caption)
+            metric_row.addWidget(metric, stretch=1)
+            self.summary_values[key] = value
+            self.summary_metrics[key] = metric
+        summary_layout.addLayout(metric_row)
+
+        type_row = QHBoxLayout()
+        type_row.setSpacing(6)
+        self.type_values: Dict[str, QLabel] = {}
+        for key, label in (
+            (DOC_EXPENSE, "Khoản chi"),
+            (DOC_SCALE, "Phiếu cân"),
+            (DOC_BILL, "Bill"),
+            ("other", "Loại khác"),
+        ):
+            chip = QFrame()
+            chip.setObjectName("extractTypeChip")
+            chip_layout = QHBoxLayout(chip)
+            chip_layout.setContentsMargins(8, 2, 8, 2)
+            chip_layout.setSpacing(6)
+            caption = QLabel(label)
+            caption.setObjectName("extractTypeLabel")
+            value = QLabel("0")
+            value.setObjectName("extractTypeValue")
+            chip_layout.addWidget(caption)
+            chip_layout.addWidget(value)
+            type_row.addWidget(chip)
+            self.type_values[key] = value
+        type_row.addStretch(1)
+        summary_layout.addLayout(type_row)
         layout.addWidget(summary)
 
         filters = QHBoxLayout()
@@ -435,19 +483,16 @@ class JsonExtractDialog(ResizableDialog):
         counts = extract_summary(
             self.rows, self.payload.get("canh_bao"), error_indexes
         )
-        self.lbl_summary.setText(
-            f"Tổng số file: {counts['files']}     •     "
-            f"Tổng số dòng bóc tách: {counts['total']}     •     "
-            f"Dòng OK: {counts['ok']}     •     "
-            f"Cần kiểm tra: {counts['need_check']}     •     "
-            f"Cảnh báo: {counts['warnings']}"
-        )
-        self.lbl_types.setText(
-            f"Khoản chi: {counts[DOC_EXPENSE]}     •     "
-            f"Phiếu cân: {counts[DOC_SCALE]}     •     "
-            f"Bill: {counts[DOC_BILL]}     •     "
-            f"Loại khác: {counts['other']}"
-        )
+        for key, value in self.summary_values.items():
+            value.setText(str(counts[key]))
+        for key in ("need_check", "warnings"):
+            tone = "warning" if counts[key] else "quiet"
+            for widget in (self.summary_metrics[key], self.summary_values[key]):
+                if widget.property("tone") != tone:
+                    widget.setProperty("tone", tone)
+                    repolish(widget)
+        for key, value in self.type_values.items():
+            value.setText(str(counts[key]))
         self.lbl_error_hint.setVisible(bool(error_indexes))
         if error_indexes:
             self.lbl_error_hint.setText(

@@ -11,6 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
+from app.daily_import import DOC_EXPENSE
 from app.daily_import_ui import JsonExtractDialog
 
 
@@ -33,6 +34,11 @@ class JsonExtractDialogTests(unittest.TestCase):
 
     def test_sort_and_filter_keep_actions_on_original_data_row(self) -> None:
         dialog = JsonExtractDialog(str(self.path))
+        self.assertEqual(dialog.summary_values["files"].text(), "3")
+        self.assertEqual(dialog.summary_values["total"].text(), "3")
+        self.assertEqual(dialog.summary_values["warnings"].text(), "1")
+        self.assertEqual(dialog.summary_metrics["warnings"].property("tone"), "warning")
+        self.assertEqual(dialog.type_values[DOC_EXPENSE].text(), "3")
         self.assertEqual(dialog.type_filter.itemText(1), "Khoản chi")
         dialog.type_filter.setCurrentText("Bill")
         self.assertEqual(dialog._visible_indices, [])
@@ -45,6 +51,10 @@ class JsonExtractDialogTests(unittest.TestCase):
         with patch("app.daily_import_ui.notify.confirm", return_value=True):
             dialog.delete_row()
         self.assertEqual([row["file_nguon"] for row in dialog.rows], ["third.jpg", "second.jpg"])
+        self.assertEqual(dialog.summary_values["total"].text(), "2")
+        self.assertEqual(dialog.summary_values["warnings"].text(), "0")
+        self.assertEqual(dialog.summary_metrics["warnings"].property("tone"), "quiet")
+        self.assertEqual(dialog.type_values[DOC_EXPENSE].text(), "2")
 
 
 if __name__ == "__main__":

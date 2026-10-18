@@ -93,6 +93,20 @@ QPushButton#guideToggle:hover { color: #2563EB; background: transparent; }
 QFrame#guideBox { background: #F8FAFC; border: 1px solid #E5E7EB; border-radius: 8px; }
 QLabel#guideText { color: #475569; }
 
+/* ---------- Tổng hợp ngắn ở màn hình kiểm tra chứng từ ---------- */
+QFrame#extractSummary { background: #F8FAFC; border: 1px solid #E5E7EB; border-radius: 8px; }
+QFrame#extractMetric { background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 6px; }
+QFrame#extractMetric[tone="success"] { background: #F0FDF4; border-color: #BBF7D0; }
+QFrame#extractMetric[tone="warning"] { background: #FFFBEB; border-color: #FDE68A; }
+QLabel#extractMetricValue { color: #1D4ED8; font-size: 15pt; font-weight: 700; }
+QLabel#extractMetricValue[tone="success"] { color: #15803D; }
+QLabel#extractMetricValue[tone="warning"] { color: #B45309; }
+QLabel#extractMetricValue[tone="quiet"] { color: #64748B; }
+QLabel#extractMetricLabel { color: #64748B; font-size: 8.5pt; }
+QFrame#extractTypeChip { background: #EEF2F7; border: 1px solid #E2E8F0; border-radius: 6px; }
+QLabel#extractTypeLabel { color: #475569; font-size: 8.5pt; }
+QLabel#extractTypeValue { color: #1E3A5F; font-size: 9pt; font-weight: 700; }
+
 /* ---------- Nút bấm ---------- */
 QPushButton {
     background: #FFFFFF; color: #374151; border: 1px solid #D1D5DB;
