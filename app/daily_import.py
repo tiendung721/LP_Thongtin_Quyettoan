@@ -489,6 +489,15 @@ def parse_number(value: Any) -> Optional[float]:
         return None
 
 
+def parse_money(value: Any) -> Optional[float]:
+    """Đọc số tiền có dấu chấm phân tách hàng nghìn kiểu Việt Nam."""
+    if isinstance(value, str):
+        compact = re.sub(r"\s*(?:đ|vnđ)\s*$", "", value.strip(), flags=re.IGNORECASE)
+        if re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+(?:,\d+)?", compact):
+            return parse_number(compact.replace(".", "").replace(",", "."))
+    return parse_number(value)
+
+
 def _sqt_key(value: Any) -> str:
     number = parse_number(value)
     if number is not None:
@@ -542,8 +551,8 @@ def match_date_of(item: Dict[str, Any]) -> Optional[str]:
     """Ngày dùng để ghép của một dòng JSON bóc tách (dạng ISO).
 
     Phiếu cân ghép theo ngày đóng; Khoản chi và Bill ưu tiên ngày chạy rồi mới
-    tới ngày đóng. Bước 2 hiển thị đúng ngày này để người dùng biết phần mềm
-    đang dùng ngày nào khi ghép dữ liệu.
+    tới ngày đóng. Bảng kiểm tra ở Bước 2 hiển thị riêng ngày đóng thực tế;
+    ngày dùng để ghép vẫn được dùng trong quá trình phân tích nhập.
     """
     close_date = parse_date(item.get("ngay_dong"))
     sail_date = parse_date(item.get("ngay_chay"))
@@ -649,10 +658,19 @@ def extract_summary(
         counts[classify_doc_type(row.get("loai_chung_tu")) or "other"] += 1
         row_warnings = row.get("canh_bao")
         if isinstance(row_warnings, list):
-            counts["warnings"] += len(row_warnings)
-        elif row_warnings not in (None, ""):
-            counts["warnings"] += 1
-        if index not in errors and _key_text(row.get("trang_thai")) in ("", "OK"):
+            warning_count = sum(item not in (None, "", {}) for item in row_warnings)
+        elif row_warnings not in (None, "", {}):
+            warning_count = 1
+        else:
+            warning_count = 0
+        low_confidence = _key_text(row.get("do_tin_cay")) == "THAP"
+        counts["warnings"] += warning_count + int(low_confidence)
+        if (
+            index not in errors
+            and _key_text(row.get("trang_thai")) in ("", "OK")
+            and warning_count == 0
+            and not low_confidence
+        ):
             counts["ok"] += 1
         else:
             counts["need_check"] += 1
@@ -1844,14 +1862,14 @@ class DailyImportService:
                 vessel=str(item.get("ten_tau") or "").strip(),
                 sail_date=sail_date,
                 carrier=str(item.get("vt_bien") or "").strip(),
-                material_price=parse_number(item.get("gia_vat_lieu")),
+                material_price=parse_money(item.get("gia_vat_lieu")),
                 invoice_no=str(item.get("so_hd") or "").strip(),
                 bill_no=str(item.get("so_bill") or "").strip(),
                 seal=str(item.get("so_chi_seal") or "").strip(),
-                unit_price=parse_number(item.get("don_gia")),
-                amount=parse_number(item.get("thanh_tien")),
-                vat=parse_number(item.get("vat")),
-                total=parse_number(item.get("tong_tien")),
+                unit_price=parse_money(item.get("don_gia")),
+                amount=parse_money(item.get("thanh_tien")),
+                vat=parse_money(item.get("vat")),
+                total=parse_money(item.get("tong_tien")),
                 other=self._json_cell_text(item.get("truong_khac")),
                 confidence=str(item.get("do_tin_cay") or "").strip(),
                 warning=self._json_warning_text(item.get("canh_bao")),
@@ -1878,11 +1896,11 @@ class DailyImportService:
 
     @classmethod
     def _json_warning_text(cls, value: Any) -> str:
-        if value in (None, ""):
+        if value in (None, "", [], {}):
             return ""
         if isinstance(value, list):
             return "; ".join(
-                cls._json_cell_text(item) for item in value if item not in (None, "")
+                cls._json_cell_text(item) for item in value if item not in (None, "", {})
             )
         return cls._json_cell_text(value)
 

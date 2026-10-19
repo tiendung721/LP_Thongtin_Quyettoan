@@ -17,17 +17,14 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QFormLayout,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QMenu,
-    QPlainTextEdit,
     QPushButton,
     QRadioButton,
-    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -36,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from .dialogs.base_dialog import ResizableDialog
 from .dialogs.notifications import notify
+from .extract_row_editor import ExtractRowEditor, has_low_confidence, needs_review, warning_items, warning_text
 from .theme import repolish
 from .daily_import import (
     DOC_BILL,
@@ -60,8 +58,8 @@ from .daily_import import (
     classify_doc_type,
     extract_summary,
     load_extract_payload,
-    match_date_of,
     parse_date,
+    parse_money,
     parse_number,
     save_extract_payload,
 )
@@ -84,7 +82,7 @@ def _display_date(value: Any) -> str:
 
 def _display_number(value: Any, decimals: int = 0) -> str:
     """Số theo cách viết Việt Nam: 49.572.000 (tiền) hoặc 27,83 (tấn)."""
-    number = parse_number(value)
+    number = parse_number(value) if decimals else parse_money(value)
     if number is None:
         return ""
     text = f"{number:,.{decimals}f}"
@@ -112,12 +110,12 @@ def _main_info(doc_type: str, row: Dict[str, Any]) -> str:
     elif doc_type == DOC_SCALE:
         if row.get("so_chi_seal"):
             parts.append(f"Seal {row['so_chi_seal']}")
-        elif row.get("bien_so_xe"):
+        if row.get("bien_so_xe"):
             parts.append(f"Xe {row['bien_so_xe']}")
     elif doc_type == DOC_BILL:
         if row.get("so_bill"):
-            parts.append(f"Bill {row['so_bill']}")
-        elif row.get("ten_tau"):
+            parts.append(f"B/L {row['so_bill']}")
+        if row.get("ten_tau"):
             parts.append(str(row["ten_tau"]))
     return "  •  ".join(parts)
 
@@ -135,9 +133,11 @@ def _amount_info(doc_type: str, row: Dict[str, Any]) -> str:
 
 
 def _warning_count(value: Any) -> int:
-    if isinstance(value, list):
-        return len(value)
-    return 0 if value in (None, "") else 1
+    return len(warning_items(value))
+
+
+def _row_warning_count(row: Dict[str, Any]) -> int:
+    return _warning_count(row.get("canh_bao")) + int(has_low_confidence(row))
 
 
 class FunctionWorker(QObject):
@@ -159,56 +159,16 @@ class FunctionWorker(QObject):
 
 
 class _EditExtractRowDialog(ResizableDialog):
-    """Form chi tiết một dòng bóc tách: sửa đúng các trường của schema JSON."""
-
-    FIELDS = [
-        ("stt_hien_thi", "STT hiển thị"),
-        ("file_nguon", "File nguồn"),
-        ("ma_md5_file", "Mã MD5 file"),
-        ("loai_chung_tu", "Loại chứng từ"),
-        ("trang_thai", "Trạng thái"),
-        ("ngay_dong", "Ngày Đóng"),
-        ("so_container", "Số Container"),
-        ("bien_so_xe", "Biển số xe"),
-        ("so_tan", "Số tấn"),
-        ("loai_hang", "Loại hàng"),
-        ("noi_dong", "Nơi đóng"),
-        ("nguoi_nhan", "Người nhận"),
-        ("ten_tau", "Tên tàu"),
-        ("ngay_chay", "Ngày chạy"),
-        ("vt_bien", "VT biển"),
-        ("gia_vat_lieu", "Giá vật liệu"),
-        ("so_hd", "Số HĐ"),
-        ("so_bill", "Số B/L"),
-        ("so_chi_seal", "Số chì/Seal"),
-        ("don_gia", "Đơn giá"),
-        ("thanh_tien", "Thành tiền"),
-        ("vat", "VAT"),
-        ("tong_tien", "Tổng tiền"),
-        ("truong_khac", "Trường khác"),
-        ("do_tin_cay", "Độ tin cậy"),
-        ("canh_bao", "Cảnh báo"),
-    ]
-    INT_FIELDS = {"stt_hien_thi"}
-    NUMBER_FIELDS = {
-        "so_tan",
-        "gia_vat_lieu",
-        "don_gia",
-        "thanh_tien",
-        "vat",
-        "tong_tien",
-    }
-    STRUCTURED_DEFAULTS = {"truong_khac": {}, "canh_bao": []}
+    """Cửa sổ sửa chứng từ theo đúng loại giấy tờ."""
 
     def __init__(self, row: Dict[str, Any], reason: str = "", parent=None):
         super().__init__(parent)
         self.row = row
-        self.editors: Dict[str, QWidget] = {}
         self._updated: Dict[str, Any] = dict(row)
 
         self.setWindowTitle("Sửa dòng bóc tách")
-        self.resize(620, 700)
-        self.setMinimumSize(520, 420)
+        self.resize(760, 800)
+        self.setMinimumSize(600, 500)
 
         layout = QVBoxLayout(self)
 
@@ -218,27 +178,8 @@ class _EditExtractRowDialog(ResizableDialog):
             note.setWordWrap(True)
             layout.addWidget(note)
 
-        form_host = QWidget()
-        form = QFormLayout(form_host)
-        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        form.setLabelAlignment(Qt.AlignRight)
-        form.setContentsMargins(4, 4, 12, 4)
-        form.setSpacing(8)
-        for key, label in self.FIELDS:
-            value = _display_value(row.get(key))
-            if key in self.STRUCTURED_DEFAULTS:
-                editor: QWidget = QPlainTextEdit(value)
-                editor.setMinimumHeight(90)
-            else:
-                editor = QLineEdit(value)
-            form.addRow(label + ":", editor)
-            self.editors[key] = editor
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setWidget(form_host)
-        layout.addWidget(scroll, stretch=1)
+        self.editor_form = ExtractRowEditor(row, self)
+        layout.addWidget(self.editor_form, stretch=1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText("Xong")
@@ -249,48 +190,13 @@ class _EditExtractRowDialog(ResizableDialog):
 
     @Slot()
     def _on_accept(self) -> None:
-        updated = dict(self.row)
         try:
-            for key, editor in self.editors.items():
-                text = (
-                    editor.toPlainText()
-                    if isinstance(editor, QPlainTextEdit)
-                    else editor.text()
-                )
-                updated[key] = self._parse_value(key, text)
+            updated = self.editor_form.updated_row()
         except ValueError as exc:
             notify.warning(self, "Dữ liệu chưa hợp lệ", str(exc))
             return
         self._updated = updated
         self.accept()
-
-    @classmethod
-    def _parse_value(cls, key: str, text: str) -> Any:
-        value = text.strip()
-        if key in cls.STRUCTURED_DEFAULTS:
-            if not value:
-                default = cls.STRUCTURED_DEFAULTS[key]
-                return list(default) if isinstance(default, list) else dict(default)
-            try:
-                return json.loads(value)
-            except json.JSONDecodeError as exc:
-                label = dict(cls.FIELDS).get(key, key)
-                raise ValueError(f"Trường '{label}' phải là JSON hợp lệ: {exc}") from exc
-        if not value:
-            return None
-        if key in cls.INT_FIELDS:
-            parsed = parse_number(value)
-            if parsed is None or int(parsed) != parsed:
-                label = dict(cls.FIELDS).get(key, key)
-                raise ValueError(f"Trường '{label}' phải là số nguyên.")
-            return int(parsed)
-        if key in cls.NUMBER_FIELDS:
-            parsed = parse_number(value)
-            if parsed is None:
-                label = dict(cls.FIELDS).get(key, key)
-                raise ValueError(f"Trường '{label}' phải là số.")
-            return parsed
-        return value
 
     def updated_row(self) -> Dict[str, Any]:
         return self._updated
@@ -309,11 +215,13 @@ class JsonExtractDialog(ResizableDialog):
         "Loại chứng từ",
         "File nguồn",
         "Container",
-        "Ngày dùng để ghép",
-        "Thông tin chính",
+        "Ngày đóng",
+        "Loại hàng",
+        "Thông tin chung",
         "Số tấn / Tổng tiền",
         "Giá VL",
         "Trạng thái",
+        "Cảnh báo",
     ]
 
     def __init__(
@@ -340,7 +248,7 @@ class JsonExtractDialog(ResizableDialog):
         self._sort_ascending = True
 
         self.setWindowTitle("Kiểm tra dữ liệu bóc tách")
-        self.resize(1160, 660)
+        self.resize(1480, 720)
         self.setMinimumSize(900, 480)
 
         layout = QVBoxLayout(self)
@@ -446,9 +354,12 @@ class JsonExtractDialog(ResizableDialog):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
+        self.table.setColumnWidth(2, 160)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSortIndicatorShown(True)
         self.table.horizontalHeader().sectionClicked.connect(self._sort_by)
+        self.table.cellClicked.connect(self._show_full_source_name)
         self.table.doubleClicked.connect(self.edit_row)
         layout.addWidget(self.table, stretch=1)
 
@@ -519,14 +430,15 @@ class JsonExtractDialog(ResizableDialog):
             except ValueError:
                 return (1, cells[0].casefold())
         if self._sort_column == 4:
-            parsed = parse_date(match_date_of(row))
+            parsed = parse_date(row.get("ngay_dong"))
             return (0, parsed) if parsed else (1, "")
-        if self._sort_column in (6, 7):
-            if self._sort_column == 7:
-                value = parse_number(row.get("gia_vat_lieu"))
+        if self._sort_column in (7, 8):
+            if self._sort_column == 8:
+                value = parse_money(row.get("gia_vat_lieu"))
                 return (0, value) if value is not None else (1, 0)
-            raw = row.get("so_tan") if classify_doc_type(row.get("loai_chung_tu")) in (DOC_SCALE, DOC_BILL) and row.get("so_tan") not in (None, "") else row.get("tong_tien")
-            value = parse_number(raw)
+            is_tons = classify_doc_type(row.get("loai_chung_tu")) in (DOC_SCALE, DOC_BILL) and row.get("so_tan") not in (None, "")
+            raw = row.get("so_tan") if is_tons else row.get("tong_tien")
+            value = parse_number(raw) if is_tons else parse_money(raw)
             return (0, value) if value is not None else (1, 0)
         return (0, cells[self._sort_column].casefold())
 
@@ -540,10 +452,8 @@ class JsonExtractDialog(ResizableDialog):
         visible = []
         for index, row in enumerate(self.rows):
             doc_type = classify_doc_type(row.get("loai_chung_tu"))
-            warnings = _warning_count(row.get("canh_bao"))
-            needs_check = bool(self.row_errors[index]) or (
-                bool(row.get("trang_thai")) and str(row.get("trang_thai")).strip().upper() != "OK"
-            )
+            warnings = _row_warning_count(row)
+            needs_check = bool(self.row_errors[index]) or needs_review(row)
             if wanted_status == "Cần kiểm tra" and not needs_check:
                 continue
             if wanted_status == "Sẵn sàng" and needs_check:
@@ -558,7 +468,7 @@ class JsonExtractDialog(ResizableDialog):
             if query and query not in " ".join(map(str, self._row_cells(index, row, doc_type))).casefold():
                 continue
             visible.append(index)
-        if self._sort_column in (4, 6, 7):
+        if self._sort_column in (4, 7, 8):
             filled = [index for index in visible if self._sort_value(index)[0] == 0]
             blank = [index for index in visible if self._sort_value(index)[0] != 0]
             filled.sort(key=self._sort_value, reverse=not self._sort_ascending)
@@ -572,18 +482,22 @@ class JsonExtractDialog(ResizableDialog):
             row = self.rows[index]
             reason = self.row_errors[index]
             doc_type = classify_doc_type(row.get("loai_chung_tu"))
-            warnings = _warning_count(row.get("canh_bao"))
-            needs_check = bool(row.get("trang_thai")) and str(
-                row.get("trang_thai")
-            ).strip().upper() != "OK"
+            warnings = _row_warning_count(row)
+            needs_check = needs_review(row)
             for col, text in enumerate(self._row_cells(index, row, doc_type)):
                 item = QTableWidgetItem(text)
                 item.setToolTip(self._row_tooltip(row, reason))
+                if col == 2:
+                    item.setToolTip(str(row.get("file_nguon") or "") + "\nBấm để xem tên đầy đủ")
                 if reason:
                     item.setBackground(ERROR_BG)
                     item.setForeground(ERROR_FG)
                 elif needs_check or warnings:
                     item.setBackground(WARN_BG)
+                if not reason and col == 9:
+                    item.setForeground(QColor("#B45309" if needs_check else "#15803D"))
+                if not reason and col == 10:
+                    item.setForeground(QColor("#B45309" if warnings or has_low_confidence(row) else "#15803D"))
                 self.table.setItem(table_row, col, item)
         self.table.blockSignals(False)
         if visible:
@@ -603,19 +517,23 @@ class JsonExtractDialog(ResizableDialog):
             ),
             str(row.get("file_nguon") or ""),
             str(row.get("so_container") or ""),
-            _display_date(match_date_of(row)),
+            _display_date(row.get("ngay_dong")),
+            str(row.get("loai_hang") or ""),
             _main_info(doc_type, row),
             _amount_info(doc_type, row),
             _display_number(row.get("gia_vat_lieu")),
             self._status_text(index, row),
+            f"{_row_warning_count(row)} cảnh báo" if _row_warning_count(row) else "OK",
         ]
 
     def _status_text(self, index: int, row: Dict[str, Any]) -> str:
         if self.row_errors[index]:
             return self.row_errors[index]
         status = str(row.get("trang_thai") or "").strip() or "OK"
-        warnings = _warning_count(row.get("canh_bao"))
-        return f"{status} • {warnings} cảnh báo" if warnings else status
+        warnings = _row_warning_count(row)
+        if warnings or has_low_confidence(row):
+            return "Cần kiểm tra"
+        return status
 
     @staticmethod
     def _row_tooltip(row: Dict[str, Any], reason: str) -> str:
@@ -623,10 +541,17 @@ class JsonExtractDialog(ResizableDialog):
         if reason:
             lines.append(f"Chưa nhập được: {reason}")
         lines.append(f"File nguồn: {row.get('file_nguon') or '—'}")
-        warnings = row.get("canh_bao")
-        if isinstance(warnings, list) and warnings:
-            lines.append("Cảnh báo: " + json.dumps(warnings, ensure_ascii=False))
+        for warning in warning_items(row.get("canh_bao")):
+            lines.append("Cảnh báo: " + warning_text(warning))
+        if has_low_confidence(row):
+            lines.append("Độ tin cậy bóc tách thấp; cần đối chiếu chứng từ.")
         return "\n".join(lines)
+
+    @Slot(int, int)
+    def _show_full_source_name(self, table_row: int, column: int) -> None:
+        if column == 2 and 0 <= table_row < len(self._visible_indices):
+            filename = str(self.rows[self._visible_indices[table_row]].get("file_nguon") or "")
+            notify.info(self, "Tên file nguồn đầy đủ", filename or "Không có tên file nguồn.")
 
     def _first_error_row(self) -> int:
         for index, reason in enumerate(self.row_errors):
@@ -655,8 +580,8 @@ class JsonExtractDialog(ResizableDialog):
         if dialog.exec() != QDialog.Accepted:
             return
         self.rows[index] = dialog.updated_row()
-        # Dòng vừa sửa coi như đã xử lý; Bước 3 sẽ chấm lại khi nhập.
-        self.row_errors[index] = ""
+        if self.row_errors[index] and not self.row_errors[index].startswith("Đã sửa; cần nhập lại"):
+            self.row_errors[index] = "Đã sửa; cần nhập lại để kiểm tra. Lỗi lần trước: " + self.row_errors[index]
         self._dirty = True
         self._refresh()
         if index in self._visible_indices:
@@ -1646,23 +1571,8 @@ class ImportResolutionDialog(ResizableDialog):
         title.setStyleSheet("font-size: 14pt; font-weight: 700;")
         self.detail_layout.addWidget(title)
         row = self._source_row(issue, json_index)
-        editors: Dict[str, QWidget] = {}
-        form_host = QWidget()
-        form = QFormLayout(form_host)
-        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        for key, label in _EditExtractRowDialog.FIELDS:
-            value = _display_value(row.get(key))
-            if key in _EditExtractRowDialog.STRUCTURED_DEFAULTS:
-                editor: QWidget = QPlainTextEdit(value)
-                editor.setMinimumHeight(70)
-            else:
-                editor = QLineEdit(value)
-            editors[key] = editor
-            form.addRow(label + ":", editor)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(form_host)
-        self.detail_layout.addWidget(scroll, stretch=1)
+        editor_form = ExtractRowEditor(row, self)
+        self.detail_layout.addWidget(editor_form, stretch=1)
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         btn_back = QPushButton("Quay lại")
@@ -1670,7 +1580,7 @@ class ImportResolutionDialog(ResizableDialog):
         btn_apply.setProperty("variant", "primary")
         btn_back.clicked.connect(lambda: self._show_issue(issue))
         btn_apply.clicked.connect(
-            lambda: self._apply_edit(issue, editors, json_index=json_index)
+            lambda: self._apply_edit(issue, editor_form, json_index=json_index)
         )
         buttons.addWidget(btn_back)
         buttons.addWidget(btn_apply)
@@ -1679,7 +1589,7 @@ class ImportResolutionDialog(ResizableDialog):
     def _apply_edit(
         self,
         issue: ImportIssue,
-        editors: Dict[str, QWidget],
+        editor_form: ExtractRowEditor,
         *,
         json_index: Optional[int] = None,
     ) -> None:
@@ -1689,15 +1599,8 @@ class ImportResolutionDialog(ResizableDialog):
         index = json_index if json_index is not None else issue.json_indexes[0]
         if not (0 <= index < len(rows)):
             return
-        updated = dict(rows[index])
         try:
-            for key, editor in editors.items():
-                text = (
-                    editor.toPlainText()
-                    if isinstance(editor, QPlainTextEdit)
-                    else editor.text()
-                )
-                updated[key] = _EditExtractRowDialog._parse_value(key, text)
+            updated = editor_form.updated_row()
         except ValueError as exc:
             notify.warning(self, "Dữ liệu chưa hợp lệ", str(exc))
             return

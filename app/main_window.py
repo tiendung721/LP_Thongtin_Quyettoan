@@ -53,9 +53,9 @@ from .daily_import import EXPENSE_SHEET, INFO_SHEET, DailyImportError, ImportAna
 from .daily_import import DailyImportService
 from .daily_import_ui import (
     FunctionWorker,
-    ImportResolutionDialog,
     JsonExtractDialog,
 )
+from .guided_import_ui import GuidedImportResolutionDialog as ImportResolutionDialog
 from .database import Database
 from .dialogs.base_dialog import enable_standard_window_controls
 from .dialogs.notifications import NotificationMetric, notify

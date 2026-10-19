@@ -106,6 +106,11 @@ QLabel#extractMetricLabel { color: #64748B; font-size: 8.5pt; }
 QFrame#extractTypeChip { background: #EEF2F7; border: 1px solid #E2E8F0; border-radius: 6px; }
 QLabel#extractTypeLabel { color: #475569; font-size: 8.5pt; }
 QLabel#extractTypeValue { color: #1E3A5F; font-size: 9pt; font-weight: 700; }
+QFrame#extractEditCard { background: #FFFFFF; border: 1px solid #DCE4EF; border-radius: 9px; }
+QLabel#extractEditSection { color: #173B65; font-weight: 700; padding: 3px 0; }
+QLabel#extractWarningText { color: #92400E; background: #FFFBEB; border: 1px solid #FDE68A; border-radius: 6px; padding: 7px; }
+QLabel#extractWarningOk { color: #15803D; background: #F0FDF4; border: 1px solid #BBF7D0; border-radius: 6px; padding: 7px; }
+QPushButton#extractSourceFile { text-align: left; color: #1D4ED8; background: #F8FAFC; }
 
 /* ---------- Nút bấm ---------- */
 QPushButton {
