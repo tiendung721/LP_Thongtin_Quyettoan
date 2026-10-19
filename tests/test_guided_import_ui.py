@@ -9,12 +9,16 @@ from datetime import datetime
 from pathlib import Path
 
 from openpyxl import Workbook
+from PySide6.QtCore import QItemSelectionModel
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
-from app.daily_import import EXPENSE_HEADERS, EXPENSE_SHEET, INFO_HEADERS, DailyImportService  # noqa: E402
+from app.daily_import import (  # noqa: E402
+    EXPENSE_HEADERS, EXPENSE_SHEET, INFO_HEADERS, DailyImportService,
+    FieldConflict, ImportIssue, InfoChange,
+)
 from app.database import Database  # noqa: E402
 from app.guided_import_ui import GuidedImportResolutionDialog  # noqa: E402
 
@@ -109,6 +113,117 @@ class GuidedImportDialogTests(unittest.TestCase):
         self.assertEqual(self.dialog.result(), QDialog.Accepted)
         self.assertEqual(self.daily.read_bytes(), before)
         self.assertGreater(self.db.count_pending_rows(), 0)
+
+    def test_deferred_document_stays_visible_and_can_be_undone(self):
+        before = self.daily.read_bytes()
+        self.dialog.choice_table.selectRow(0)
+        self.dialog.defer_selected("choice")
+
+        self.assertEqual(self.dialog.choice_table.rowCount(), 1)
+        self.assertEqual(self.dialog.choice_table.item(0, 5).text(), "Xử lý sau")
+        self.assertEqual(
+            self.dialog.choice_table.item(0, 0).background().color().name(), "#fff1b8"
+        )
+        self.assertEqual(set(self.dialog.analysis.skipped_json_indexes), {0, 1, 2})
+        self.assertEqual(self.daily.read_bytes(), before)
+
+        self.dialog.choice_table.selectRow(0)
+        self.dialog.undo_defer("choice")
+        self.assertEqual(self.dialog.analysis.skipped_count, 0)
+        self.assertEqual(self.dialog.choice_table.item(0, 5).text(), "Chưa chọn")
+
+    def test_saved_defer_reopens_with_yellow_row(self):
+        self.dialog.choice_table.selectRow(0)
+        self.dialog.defer_selected("choice")
+        reopened_analysis = self.service.analyze(str(self.output), str(self.daily))
+        reopened = GuidedImportResolutionDialog(self.service, reopened_analysis)
+        try:
+            self.assertEqual(reopened.choice_table.item(0, 5).text(), "Xử lý sau")
+            self.assertEqual(
+                reopened.choice_table.item(0, 0).background().color().name(), "#fff1b8"
+            )
+        finally:
+            reopened.accept()
+
+    def test_close_after_tab_save_keeps_draft_without_importing(self):
+        before = self.daily.read_bytes()
+        self.dialog.choice_table.selectRow(0)
+        self.dialog.defer_selected("choice")
+        self.dialog.reject()
+        self.assertEqual(self.dialog.result(), QDialog.Accepted)
+        self.assertTrue(self.dialog.saved_only)
+        self.assertEqual(self.daily.read_bytes(), before)
+
+    def test_confirm_import_keeps_only_selected_documents_in_waiting_batch(self):
+        before = self.daily.read_bytes()
+        self.dialog.choice_table.selectRow(0)
+        self.dialog.defer_selected("choice")
+        self.dialog.edit_table.selectRow(0)
+        self.dialog.defer_selected("edit")
+        self.assertEqual(self.dialog.analysis.skipped_count, 4)
+
+        self.dialog.finish()
+        self.assertEqual(self.dialog.result(), QDialog.Accepted)
+        summary = self.service.commit(self.dialog.final_analysis)
+        self.assertGreaterEqual(summary.pending_count, 4)
+        self.assertEqual(self.daily.read_bytes(), before)
+        batches = self.db.list_deferred_batches()
+        self.assertEqual(len(batches), 1)
+        waiting = self.db.get_deferred_batch(batches[0]["id"])
+        self.assertEqual(len(waiting["payload"]["du_lieu_boc_tach"]), 4)
+        self.assertEqual(waiting["resolutions"], {})
+
+    def test_multiple_selected_documents_are_deferred_together(self):
+        payload = json.loads(self.output.read_text(encoding="utf-8"))
+        extra = dict(payload["du_lieu_boc_tach"][3])
+        extra.update({"ma_md5_file": "cost-extra", "so_container": "JJKK1234567"})
+        payload["du_lieu_boc_tach"].append(extra)
+        self.output.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        analysis = self.service.analyze(str(self.output), str(self.daily))
+        dialog = GuidedImportResolutionDialog(self.service, analysis)
+        try:
+            self.assertEqual(dialog.edit_table.rowCount(), 2)
+            dialog.edit_table.selectRow(0)
+            dialog.edit_table.selectionModel().select(
+                dialog.edit_table.model().index(1, 0),
+                QItemSelectionModel.Select | QItemSelectionModel.Rows,
+            )
+            dialog.defer_selected("edit")
+            self.assertEqual(set(dialog.analysis.skipped_json_indexes), {3, 4})
+            self.assertEqual(
+                [dialog.edit_table.item(row, 5).text() for row in range(2)],
+                ["Xử lý sau", "Xử lý sau"],
+            )
+        finally:
+            dialog.accept()
+
+    def test_bill_label_and_review_show_exact_update(self):
+        issue = ImportIssue(
+            issue_id="bill-label", kind="FIELD_CONFLICT", title="", reason="",
+            doc_type="BILL", container="IIJJ1234567", match_date=None,
+            reference="Bill BL-NEW",
+        )
+        self.assertEqual(self.dialog.source_label(issue), "Bill BL-NEW")
+        conflict = FieldConflict(
+            "vessel-conflict", 2, "Tên tàu", "Tàu cũ", "Tàu mới", "Tháng 6",
+        )
+        self.dialog.sandbox.workbook_rows[("Tháng 6", 2)]["Tên tàu"] = "Tàu cũ"
+        change = InfoChange(
+            action="UPDATE", target_row=2, sqt=250,
+            values={"SQT PM": 250, "Số Container": "IIJJ1234567",
+                    "Số B/L": "BL-NEW", "Tên tàu": "Tàu mới"},
+            staged_ids=[], document_md5s=[], conflicts=[conflict], target_sheet="Tháng 6",
+        )
+        self.dialog.sandbox.analysis.info_changes = [change]
+        self.dialog.sandbox.analysis.conflict_decisions[conflict.conflict_id] = False
+        self.dialog.refresh_review()
+        self.assertEqual(self.dialog.review_table.item(0, 1).text(), "Cập nhật dòng")
+        self.assertEqual(self.dialog.review_table.item(0, 2).text(), "250")
+        self.assertIn("Số B/L", self.dialog.review_details.toPlainText())
+        self.assertNotIn("Tàu cũ → Tàu mới", self.dialog.review_details.toPlainText())
+        self.dialog.sandbox.analysis.conflict_decisions[conflict.conflict_id] = True
+        self.dialog.refresh_review()
+        self.assertIn("Tàu cũ → Tàu mới", self.dialog.review_details.toPlainText())
 
 
 if __name__ == "__main__":

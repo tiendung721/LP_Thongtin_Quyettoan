@@ -221,7 +221,6 @@ class JsonExtractDialog(ResizableDialog):
         "Số tấn / Tổng tiền",
         "Giá VL",
         "Trạng thái",
-        "Cảnh báo",
     ]
 
     def __init__(
@@ -329,7 +328,7 @@ class JsonExtractDialog(ResizableDialog):
 
         filters = QHBoxLayout()
         self.status_filter = QComboBox()
-        self.status_filter.addItems(["Mọi trạng thái", "Cần kiểm tra", "Sẵn sàng", "Có cảnh báo"])
+        self.status_filter.addItems(["Mọi trạng thái", "Cần kiểm tra", "Sẵn sàng"])
         self.type_filter = QComboBox()
         self.type_filter.addItem("Mọi chứng từ", "ALL")
         self.type_filter.addItem("Khoản chi", DOC_EXPENSE)
@@ -458,8 +457,6 @@ class JsonExtractDialog(ResizableDialog):
                 continue
             if wanted_status == "Sẵn sàng" and needs_check:
                 continue
-            if wanted_status == "Có cảnh báo" and not warnings:
-                continue
             if wanted_type != "ALL" and (
                 (wanted_type == "OTHER" and doc_type in (DOC_EXPENSE, DOC_SCALE, DOC_BILL))
                 or (wanted_type != "OTHER" and doc_type != wanted_type)
@@ -496,8 +493,6 @@ class JsonExtractDialog(ResizableDialog):
                     item.setBackground(WARN_BG)
                 if not reason and col == 9:
                     item.setForeground(QColor("#B45309" if needs_check else "#15803D"))
-                if not reason and col == 10:
-                    item.setForeground(QColor("#B45309" if warnings or has_low_confidence(row) else "#15803D"))
                 self.table.setItem(table_row, col, item)
         self.table.blockSignals(False)
         if visible:
@@ -523,7 +518,6 @@ class JsonExtractDialog(ResizableDialog):
             _amount_info(doc_type, row),
             _display_number(row.get("gia_vat_lieu")),
             self._status_text(index, row),
-            f"{_row_warning_count(row)} cảnh báo" if _row_warning_count(row) else "OK",
         ]
 
     def _status_text(self, index: int, row: Dict[str, Any]) -> str:

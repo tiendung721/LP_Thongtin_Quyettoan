@@ -118,6 +118,7 @@ ISSUE_FIELD_CONFLICT = "FIELD_CONFLICT"
 RESOLUTION_SELECT = "SELECT"
 RESOLUTION_FIELDS = "FIELDS"
 RESOLUTION_SKIP = "SKIP"
+ROW_DEFER_PREFIX = "DEFERRED_ROWS:"
 
 # Lý do một dòng bóc tách không ghép được với dữ liệu quyết toán.
 REASON_NO_TARGET = "Không tìm thấy dòng quyết toán tương ứng"
@@ -1113,7 +1114,52 @@ class DailyImportService:
         # Luôn cho phép xử lý lại toàn bộ dòng trong file JSON hiện tại, kể cả khi
         # DB đã ghi nhận hoàn tất và MD5 vẫn còn trong file theo dõi. Các bước ghép
         # bên dưới sẽ quyết định CREATE hay UPDATE theo dữ liệu đích trong Excel.
-        active = [row for row in parsed if row.staged_id]
+        # A deferred decision belongs to the source rows, not to a transient
+        # matching issue. Keep a display issue while excluding those rows from
+        # this import's matching pass.
+        deferred_indexes: set[int] = set()
+        for issue_id, resolution in requested_resolutions.items():
+            if not issue_id.startswith(ROW_DEFER_PREFIX) or resolution.action != RESOLUTION_SKIP:
+                continue
+            metadata = resolution.field_choices
+            indexes = sorted({
+                index for index in metadata.get("json_indexes", [])
+                if isinstance(index, int) and 0 <= index < len(parsed)
+            })
+            if not indexes:
+                continue
+            deferred_indexes.update(indexes)
+            rows = [parsed[index] for index in indexes]
+            conflicts = [
+                FieldConflict(
+                    conflict_id=str(item.get("conflict_id") or ""),
+                    target_row=int(item.get("target_row") or 0),
+                    field_name=str(item.get("field_name") or ""),
+                    current_value=item.get("current_value"),
+                    new_value=item.get("new_value"),
+                    target_sheet=str(item.get("target_sheet") or ""),
+                )
+                for item in metadata.get("conflicts", [])
+                if isinstance(item, dict)
+            ]
+            analysis.issues.append(ImportIssue(
+                issue_id=issue_id,
+                kind=str(metadata.get("kind") or ISSUE_FIELD_CONFLICT),
+                title="Xử lý sau",
+                reason="Chứng từ được chọn để xử lý sau.",
+                doc_type=str(metadata.get("doc_type") or rows[0].doc_type),
+                container=str(metadata.get("container") or rows[0].container),
+                match_date=metadata.get("match_date") or self._match_date(rows[0]),
+                reference=str(metadata.get("reference") or self._reference_text(rows[0])),
+                json_indexes=indexes,
+                staged_ids=[row.staged_id for row in rows if row.staged_id],
+                conflicts=conflicts,
+            ))
+            analysis.resolutions[issue_id] = resolution
+            analysis.skipped_json_indexes.extend(indexes)
+            analysis.skipped_staged_ids.extend(row.staged_id for row in rows if row.staged_id)
+
+        active = [row for row in parsed if row.staged_id and row.json_index not in deferred_indexes]
 
         bills_by_container: Dict[str, List[ExtractedRow]] = {}
         all_bills_by_container: Dict[str, List[ExtractedRow]] = {}
@@ -1477,6 +1523,11 @@ class DailyImportService:
 
         for row_id, (state, note) in analysis.pending_states.items():
             self.database.update_staged_row(row_id, state=state, note=note)
+        for row in parsed:
+            if row.json_index in deferred_indexes and row.staged_id:
+                self.database.update_staged_row(
+                    row.staged_id, state="PENDING", note="Đã chọn xử lý sau ở Bước 3",
+                )
         # Dòng chưa xử lý hoặc được bỏ qua chỉ trong lần này phải nằm lại hàng chờ.
         # Nhờ vậy lô được đánh dấu nhập một phần và người dùng có thể xử lý lại sau.
         unresolved_staged = {

@@ -13,14 +13,15 @@ from PySide6.QtGui import QColor, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
-    QTabWidget, QVBoxLayout, QWidget,
+    QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from .daily_import import (
     DOC_EXPENSE, EXPENSE_SHEET, DailyImportError, ImportAnalysis,
     ISSUE_FIELD_CONFLICT, ISSUE_MISSING_CLOSE_DATE, ISSUE_MULTIPLE_BILLS,
     ISSUE_MULTIPLE_TARGETS, ISSUE_NO_TARGET, RESOLUTION_FIELDS,
-    RESOLUTION_SELECT, RESOLUTION_SKIP, DailyImportService, ImportIssue,
+    RESOLUTION_SELECT, RESOLUTION_SKIP, ROW_DEFER_PREFIX, DailyImportService,
+    FieldConflict, ImportIssue,
     IssueResolution, load_extract_payload, save_extract_payload, parse_date, parse_number,
 )
 from .dialogs.base_dialog import ResizableDialog
@@ -45,6 +46,8 @@ QPushButton[primary='true'] { color: white; background: #285DB7; border-color: #
 QPushButton[quiet='true'] { color: #526983; background: #F8FAFD; border-color: #D6E0EC; }
 QLineEdit, QComboBox { background: white; border: 1px solid #C7D3E2; border-radius: 6px; padding: 5px; }
 QTableWidget { background: white; alternate-background-color: #FAFCFF; gridline-color: #E4EAF2; selection-background-color: #DDEBFF; selection-color: #172C4A; }
+QTableWidget::item:focus { outline: 2px solid #285DB7; }
+QTextBrowser { background: #F8FAFE; border: 1px solid #DCE5F0; border-radius: 7px; padding: 10px; }
 QHeaderView::section { background: #EDF2F8; padding: 8px; border: 0; border-right: 1px solid #DCE5F0; }
 QTabWidget::pane { border: 1px solid #DCE5F0; background: white; }
 QTabBar::tab { background: #E9EFF7; padding: 10px 16px; margin-right: 3px; }
@@ -171,12 +174,16 @@ def user_candidate_name(candidate) -> str:
     return f"Số quyết toán {candidate.sqt} · {candidate.sheet_name}, dòng {candidate.row_number}"
 
 
+DEFERRED_BG = QColor("#FFF1B8")
+
+
 class GuidedImportResolutionDialog(ResizableDialog):
     def __init__(self, service: DailyImportService, analysis: ImportAnalysis, parent=None):
         super().__init__(parent)
         self.sandbox = LiveImportSession(service, analysis)
         self.final_analysis: ImportAnalysis | None = None
         self.saved_only = False
+        self._has_saved_draft = False
         self._dirty = False
         self.setWindowTitle("Xử lý dữ liệu trước khi nhập file theo dõi")
         self.setStyleSheet(STYLE)
@@ -215,18 +222,12 @@ class GuidedImportResolutionDialog(ResizableDialog):
         footer = QHBoxLayout()
         self.feedback = label("Chọn một nhóm để bắt đầu. Các mục có thể chuyển nhóm sau khi PM kiểm tra lại.", "hint")
         footer.addWidget(self.feedback, 1)
-        self.undo_button = button("Hoàn tác để sau", self.undo_defer)
-        self.undo_button.setVisible(False)
-        footer.addWidget(self.undo_button)
-        save_button = button("Lưu để xử lý tiếp", self.save_and_close)
-        save_button.setProperty("quiet", "true")
-        footer.addWidget(save_button)
         close_button = button("Đóng", self.reject)
         close_button.setProperty("quiet", "true")
         footer.addWidget(close_button)
-        footer.addWidget(button("Xem trước kết quả", lambda: self.tabs.setCurrentIndex(3)))
+        self.finish_button = button("Xác nhận nhập vào file theo dõi", self.finish, True)
+        footer.addWidget(self.finish_button)
         outer.addLayout(footer)
-        self.last_deferred: tuple[str, IssueResolution | None] | None = None
 
     def _page(self, heading: str, hint: str):
         page = QWidget()
@@ -247,16 +248,20 @@ class GuidedImportResolutionDialog(ResizableDialog):
         self.edit_table.verticalHeader().setVisible(False)
         self.edit_table.verticalHeader().setDefaultSectionSize(36)
         self.edit_table.setAlternatingRowColors(True)
+        self.edit_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.edit_table.setSelectionMode(QTableWidget.ExtendedSelection)
         layout.addWidget(self.edit_table, 1)
         self.edit_detail, self.edit_preview = self._add_detail_panel(layout, "Dữ liệu liên quan trong file theo dõi")
         self.edit_table.itemSelectionChanged.connect(self.update_edit_context)
         self.edit_table.itemChanged.connect(self.update_edit_actions)
         actions = QHBoxLayout()
-        self.edit_defer = button("Để chứng từ này xử lý sau", lambda: self.defer_selected("edit"))
+        self.edit_defer = button("Xử lý sau", lambda: self.defer_selected("edit"))
         self.edit_defer.setProperty("quiet", "true")
         actions.addWidget(self.edit_defer)
+        self.edit_undo = button("Hoàn tác", lambda: self.undo_defer("edit"))
+        actions.addWidget(self.edit_undo)
         actions.addStretch()
-        self.edit_apply = button("Kiểm tra lại dòng đã sửa", self.apply_edits, True)
+        self.edit_apply = button("Lưu dữ liệu", self.apply_edits, True)
         actions.addWidget(self.edit_apply)
         layout.addLayout(actions)
         return page
@@ -273,22 +278,34 @@ class GuidedImportResolutionDialog(ResizableDialog):
         for col, width in enumerate((205, 220, 105, 140, 440)):
             self.choice_table.setColumnWidth(col, width)
         self.choice_table.verticalHeader().setVisible(False)
-        self.choice_table.verticalHeader().setDefaultSectionSize(36)
+        self.choice_table.verticalHeader().setDefaultSectionSize(48)
         self.choice_table.setAlternatingRowColors(True)
         self.choice_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.choice_table.setSelectionMode(QTableWidget.ExtendedSelection)
         self.choice_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        layout.addWidget(self.choice_table, 1)
-        self.choice_detail, self.choice_preview = self._add_detail_panel(layout, "So sánh các phương án — bấm vào dòng để chọn")
+        splitter = QSplitter(Qt.Vertical)
+        splitter.addWidget(self.choice_table)
+        detail_widget = QWidget()
+        detail_layout = QVBoxLayout(detail_widget)
+        self.choice_detail, self.choice_preview = self._add_detail_panel(
+            detail_layout, "So sánh các phương án — bấm vào dòng để chọn", large=True,
+        )
+        splitter.addWidget(detail_widget)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([240, 440])
+        layout.addWidget(splitter, 1)
         self.choice_table.itemSelectionChanged.connect(self.update_choice_context)
         self.choice_preview.cellClicked.connect(self.choose_from_preview)
         self.choice_hint = label("Bill không được chọn sẽ bỏ qua trong lần nhập này và giữ PENDING để xử lý sau.", "notice")
         layout.addWidget(self.choice_hint)
         actions = QHBoxLayout()
-        self.choice_defer = button("Để chứng từ này xử lý sau", lambda: self.defer_selected("choice"))
+        self.choice_defer = button("Xử lý sau", lambda: self.defer_selected("choice"))
         self.choice_defer.setProperty("quiet", "true")
         actions.addWidget(self.choice_defer)
+        self.choice_undo = button("Hoàn tác", lambda: self.undo_defer("choice"))
+        actions.addWidget(self.choice_undo)
         actions.addStretch()
-        self.choice_apply = button("Ghép các lựa chọn", self.apply_choices, True)
+        self.choice_apply = button("Lưu dữ liệu", self.apply_choices, True)
         actions.addWidget(self.choice_apply)
         layout.addLayout(actions)
         return page
@@ -315,46 +332,57 @@ class GuidedImportResolutionDialog(ResizableDialog):
         toolbar.addWidget(self.rule_fill)
         toolbar.addStretch()
         layout.addLayout(toolbar)
-        self.diff_table = QTableWidget(0, 7)
-        self.diff_table.setHorizontalHeaderLabels(["Chứng từ", "Trường", "File theo dõi", "Chứng từ mới", "Cách xử lý", "Giá trị khác (nếu nhập)", "Kết quả"])
+        self.diff_table = QTableWidget(0, 8)
+        self.diff_table.setHorizontalHeaderLabels(["Chứng từ", "SQT", "Trường", "File theo dõi", "Chứng từ mới", "Cách xử lý", "Giá trị khác (nếu nhập)", "Kết quả"])
         self.diff_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.diff_table.horizontalHeader().setStretchLastSection(True)
-        for col, width in enumerate((200, 135, 160, 160, 220, 150)):
+        for col, width in enumerate((215, 75, 125, 170, 170, 230, 155)):
             self.diff_table.setColumnWidth(col, width)
         self.diff_table.verticalHeader().setVisible(False)
         self.diff_table.verticalHeader().setDefaultSectionSize(36)
         self.diff_table.setAlternatingRowColors(True)
         self.diff_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.diff_table.setSelectionMode(QTableWidget.ExtendedSelection)
         self.diff_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        layout.addWidget(self.diff_table, 1)
-        self.diff_detail, self.diff_preview = self._add_detail_panel(layout, "Dòng đang có trong file theo dõi")
+        splitter = QSplitter(Qt.Vertical)
+        splitter.addWidget(self.diff_table)
+        detail_widget = QWidget()
+        detail_layout = QVBoxLayout(detail_widget)
+        self.diff_detail, self.diff_preview = self._add_detail_panel(detail_layout, "Dòng đang có trong file theo dõi", large=True)
+        splitter.addWidget(detail_widget)
+        splitter.setStretchFactor(0, 2)
+        splitter.setSizes([340, 300])
+        layout.addWidget(splitter, 1)
         self.diff_table.itemSelectionChanged.connect(self.update_diff_context)
         actions = QHBoxLayout()
         self.scope = label("", "hint")
         actions.addWidget(self.scope)
-        self.diff_defer = button("Để chứng từ này xử lý sau", lambda: self.defer_selected("diff"))
+        self.diff_defer = button("Xử lý sau", lambda: self.defer_selected("diff"))
         self.diff_defer.setProperty("quiet", "true")
         actions.addWidget(self.diff_defer)
+        self.diff_undo = button("Hoàn tác", lambda: self.undo_defer("diff"))
+        actions.addWidget(self.diff_undo)
         actions.addStretch()
-        self.field_apply = button("Lưu cách xử lý số liệu", self.apply_fields, True)
+        self.field_apply = button("Lưu dữ liệu", self.apply_fields, True)
         actions.addWidget(self.field_apply)
         layout.addLayout(actions)
         return page
 
-    def _add_detail_panel(self, layout: QVBoxLayout, heading: str) -> tuple[QLabel, QTableWidget]:
+    def _add_detail_panel(self, layout: QVBoxLayout, heading: str, *, large: bool = False) -> tuple[QLabel, QTableWidget]:
         layout.addWidget(label(heading, "heading"))
         details = label("Chọn một dòng trong bảng phía trên để xem dữ liệu.", "detail")
         layout.addWidget(details)
         preview = QTableWidget(0, 0)
-        preview.setMinimumHeight(150)
-        preview.setMaximumHeight(225)
+        preview.setMinimumHeight(220 if large else 150)
+        if not large:
+            preview.setMaximumHeight(225)
         preview.verticalHeader().setVisible(False)
         preview.verticalHeader().setDefaultSectionSize(35)
         preview.setAlternatingRowColors(True)
         preview.setEditTriggers(QTableWidget.NoEditTriggers)
         preview.setSelectionBehavior(QTableWidget.SelectRows)
         preview.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        layout.addWidget(preview)
+        layout.addWidget(preview, 1 if large else 0)
         return details, preview
 
     def _review_page(self):
@@ -366,16 +394,20 @@ class GuidedImportResolutionDialog(ResizableDialog):
         layout.addWidget(self.review_summary)
         self.review_attention = label("", "detail")
         layout.addWidget(self.review_attention)
-        self.review_table = QTableWidget(0, 5)
-        self.review_table.setHorizontalHeaderLabels(["Phần dữ liệu", "Việc sẽ làm", "Số quyết toán", "Container", "Nơi ghi trong file"])
-        self.review_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.review_table = QTableWidget(0, 6)
+        self.review_table.setHorizontalHeaderLabels(["Phần dữ liệu", "Việc sẽ làm", "SQT", "Container", "Vị trí trong file", "Nội dung thay đổi"])
+        self.review_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.review_table.horizontalHeader().setStretchLastSection(True)
+        for col, width in enumerate((130, 125, 75, 145, 180)):
+            self.review_table.setColumnWidth(col, width)
         self.review_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.review_table.setSelectionBehavior(QTableWidget.SelectRows)
         layout.addWidget(self.review_table, 1)
-        actions = QHBoxLayout()
-        actions.addStretch()
-        self.finish_button = button("Xác nhận nhập vào file theo dõi", self.finish, True)
-        actions.addWidget(self.finish_button)
-        layout.addLayout(actions)
+        layout.addWidget(label("Chi tiết dòng được chọn", "heading"))
+        self.review_details = QTextBrowser()
+        self.review_details.setMaximumHeight(185)
+        layout.addWidget(self.review_details)
+        self.review_table.itemSelectionChanged.connect(self.update_review_detail)
         return page
 
     def current_issues(self, kinds: set[str]) -> list[ImportIssue]:
@@ -390,8 +422,39 @@ class GuidedImportResolutionDialog(ResizableDialog):
 
     def source_label(self, issue: ImportIssue) -> str:
         row = self.source_row(issue)
-        reference = issue.reference or row.get("file_nguon") or issue.doc_label
-        return f"{issue.doc_label} · {reference}"
+        reference = str(issue.reference or row.get("file_nguon") or "").strip()
+        doc_label = issue.doc_label
+        if reference.casefold().startswith(doc_label.casefold() + " "):
+            return reference
+        return f"{doc_label} {reference}".strip()
+
+    def _issue_sqt(self, issue: ImportIssue, conflict: FieldConflict | None = None) -> str:
+        if conflict and not conflict.target_row:
+            return "Sẽ tạo"
+        if conflict and conflict.target_row:
+            values = self.sandbox.workbook_rows.get((conflict.target_sheet, conflict.target_row), {})
+            return shown(values.get("SQT PM")) or "—"
+        selected = self.sandbox.analysis.resolutions.get(issue.issue_id)
+        if selected and selected.action == RESOLUTION_SELECT:
+            candidate = next((item for item in issue.candidates if item.candidate_id == selected.candidate_id), None)
+            if candidate and candidate.sqt:
+                return shown(candidate.sqt)
+        return "Chưa chọn" if issue.kind == ISSUE_MULTIPLE_TARGETS else "—"
+
+    def _is_deferred(self, issue_id: str) -> bool:
+        resolution = self.sandbox.analysis.resolutions.get(issue_id)
+        return bool(resolution and resolution.action == RESOLUTION_SKIP)
+
+    @staticmethod
+    def _selected_rows(table: QTableWidget) -> list[int]:
+        return sorted({index.row() for index in table.selectionModel().selectedRows()})
+
+    @staticmethod
+    def _paint_deferred(table: QTableWidget, row: int, deferred: bool) -> None:
+        for column in range(table.columnCount()):
+            item = table.item(row, column)
+            if item:
+                item.setBackground(DEFERRED_BG if deferred else QColor("#FFFFFF"))
 
     def effective_day_key(self, issue: ImportIssue) -> tuple[str, str]:
         row = self.source_row(issue)
@@ -402,15 +465,29 @@ class GuidedImportResolutionDialog(ResizableDialog):
     def _source_summary(self, issue: ImportIssue) -> str:
         row = self.source_row(issue)
         fields = (
-            [("File", "file_nguon"), ("Ngày chạy", "ngay_chay"), ("Ngày đóng", "ngay_dong"),
-             ("Container", "so_container"), ("Số hóa đơn", "so_hd"), ("Đơn giá", "don_gia"),
-             ("Nơi đóng", "noi_dong")]
+            [("Số hóa đơn", "so_hd"), ("Container", "so_container"),
+             ("Ngày chạy", "ngay_chay"), ("Ngày đóng", "ngay_dong"),
+             ("Đơn giá", "don_gia"), ("Nơi đóng", "noi_dong")]
             if issue.doc_type == DOC_EXPENSE else
-            [("File", "file_nguon"), ("Ngày đóng", "ngay_dong"), ("Container", "so_container"),
-             ("Số Seal", "so_chi_seal"), ("Số tấn", "so_tan"), ("Nơi đóng", "noi_dong")]
+            [("Số Bill", "so_bill"), ("Container", "so_container"),
+             ("Tên tàu", "ten_tau"), ("Ngày chạy", "ngay_chay"),
+             ("VT biển", "vt_bien"), ("Số Seal", "so_chi_seal")]
+            if issue.doc_label == "Bill" else
+            [("Container", "so_container"), ("Ngày đóng", "ngay_dong"),
+             ("Số Seal", "so_chi_seal"), ("Số tấn", "so_tan"),
+             ("Nơi đóng", "noi_dong"), ("Loại hàng", "loai_hang")]
         )
-        parts = [f"<b>{html.escape(name)}:</b> {html.escape(shown(row.get(key)) or 'Chưa có')}" for name, key in fields]
-        return f"<b>Chứng từ đang xử lý · {html.escape(issue.doc_label)}</b><br>" + " &nbsp; · &nbsp; ".join(parts)
+        cells = [
+            f"<td width='33%'><b>{html.escape(name)}:</b> {html.escape(shown(row.get(key)) or 'Chưa có')}</td>"
+            for name, key in fields
+        ]
+        grid = "".join("<tr>" + "".join(cells[index:index + 3]) + "</tr>" for index in range(0, len(cells), 3))
+        file_name = html.escape(str(row.get("file_nguon") or "Chưa có"))
+        related = (f"<br><b>Nhóm ghép:</b> {len(issue.json_indexes)} dòng chứng từ liên quan; "
+                   "Xử lý sau sẽ áp dụng cho cả nhóm." if len(issue.json_indexes) > 1 else "")
+        return (f"<b>Chứng từ đang xử lý · {html.escape(issue.doc_label)}</b>"
+                f"<table width='100%' cellpadding='3' cellspacing='3'>{grid}</table>"
+                f"<b>File:</b> {file_name}{related}")
 
     @staticmethod
     def _set_preview(table: QTableWidget, headers: list[str], rows: list[list[Any]], chosen: int = -1):
@@ -426,6 +503,7 @@ class GuidedImportResolutionDialog(ResizableDialog):
                 if row_index == chosen:
                     cell.setBackground(QColor("#E5F1FF"))
                 table.setItem(row_index, col_index, cell)
+        table.verticalHeader().setDefaultSectionSize(46)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         table.horizontalHeader().setStretchLastSection(True)
         table.setUpdatesEnabled(True)
@@ -440,7 +518,9 @@ class GuidedImportResolutionDialog(ResizableDialog):
     def update_edit_context(self):
         if self._refreshing:
             return
-        self.edit_defer.setEnabled(0 <= self.edit_table.currentRow() < len(self.edit_ids))
+        selected_ids = [self.edit_ids[row] for row in self._selected_rows(self.edit_table) if row < len(self.edit_ids)]
+        self.edit_defer.setEnabled(any(not self._is_deferred(issue_id) for issue_id in selected_ids))
+        self.edit_undo.setEnabled(any(self._is_deferred(issue_id) for issue_id in selected_ids))
         index = self.edit_table.currentRow()
         if not 0 <= index < len(self.edit_ids):
             self.edit_detail.setText("Chọn một dòng cần sửa để xem chứng từ và các dòng cùng Container.")
@@ -470,7 +550,9 @@ class GuidedImportResolutionDialog(ResizableDialog):
     def update_choice_context(self):
         if self._refreshing:
             return
-        self.choice_defer.setEnabled(0 <= self.choice_table.currentRow() < len(self.choice_ids))
+        selected_ids = [self.choice_ids[row] for row in self._selected_rows(self.choice_table) if row < len(self.choice_ids)]
+        self.choice_defer.setEnabled(any(not self._is_deferred(issue_id) for issue_id in selected_ids))
+        self.choice_undo.setEnabled(any(self._is_deferred(issue_id) for issue_id in selected_ids))
         index = self.choice_table.currentRow()
         if not 0 <= index < len(self.choice_ids):
             self.choice_detail.setText("Chọn một chứng từ phía trên để so sánh các phương án.")
@@ -508,7 +590,9 @@ class GuidedImportResolutionDialog(ResizableDialog):
     def update_diff_context(self):
         if self._refreshing:
             return
-        self.diff_defer.setEnabled(0 <= self.diff_table.currentRow() < len(self.diff_rows))
+        selected_ids = [self.diff_rows[row][0] for row in self._selected_rows(self.diff_table) if row < len(self.diff_rows)]
+        self.diff_defer.setEnabled(any(not self._is_deferred(issue_id) for issue_id in selected_ids))
+        self.diff_undo.setEnabled(any(self._is_deferred(issue_id) for issue_id in selected_ids))
         index = self.diff_table.currentRow()
         if not 0 <= index < len(self.diff_rows):
             self.diff_detail.setText("Chọn một trường phía trên để xem chứng từ và dòng đang có trong file theo dõi.")
@@ -554,10 +638,10 @@ class GuidedImportResolutionDialog(ResizableDialog):
                 continue
             differs = (day_item.text().strip(), container_item.text().strip().upper()) != (
                 shown(source.get(key)), str(source.get("so_container") or "").upper())
-            changed += differs
-            self._set_status(self.edit_table, index, 5, "Chưa kiểm tra" if differs else "Cần sửa")
+            changed += differs and not self._is_deferred(issue_id)
+            self._set_status(self.edit_table, index, 5, "Xử lý sau" if self._is_deferred(issue_id) else "Chưa lưu" if differs else "Cần sửa")
         self.edit_apply.setEnabled(changed > 0)
-        self.edit_apply.setText(f"Kiểm tra lại {changed} dòng đã sửa" if changed else "Kiểm tra lại dòng đã sửa")
+        self.edit_apply.setText("Lưu dữ liệu")
         self.update_edit_context()
 
     def update_choice_actions(self):
@@ -568,13 +652,13 @@ class GuidedImportResolutionDialog(ResizableDialog):
             candidate_id = str(box.currentData() or "")
             saved = self.sandbox.analysis.resolutions.get(issue_id)
             is_saved = bool(saved and saved.action == RESOLUTION_SELECT and saved.candidate_id == candidate_id)
-            pending = bool(candidate_id and not is_saved)
+            pending = bool(candidate_id and not is_saved and not self._is_deferred(issue_id))
             changed += pending
-            status = ("Chưa áp dụng" if pending else "Đã áp dụng" if is_saved else
-                      "Để sau" if saved and saved.action == RESOLUTION_SKIP else "Chưa chọn")
+            status = ("Xử lý sau" if saved and saved.action == RESOLUTION_SKIP else
+                      "Chưa lưu" if pending else "Đã lưu" if is_saved else "Chưa chọn")
             self._set_status(self.choice_table, index, 5, status)
         self.choice_apply.setEnabled(changed > 0)
-        self.choice_apply.setText(f"Ghép {changed} lựa chọn" if changed else "Ghép các lựa chọn")
+        self.choice_apply.setText("Lưu dữ liệu")
 
     def _current_field_choices(self, issue: ImportIssue) -> dict[str, dict[str, str]]:
         choices = {}
@@ -606,19 +690,19 @@ class GuidedImportResolutionDialog(ResizableDialog):
             choices = self._current_field_choices(issue)
             complete = len(choices) == len(issue.conflicts)
             is_saved = bool(saved and saved.action == RESOLUTION_FIELDS and saved.field_choices == choices)
-            ready += bool(complete and not is_saved)
+            ready += bool(complete and not is_saved and not (saved and saved.action == RESOLUTION_SKIP))
             for row, (issue_id, conflict) in enumerate(self.diff_rows):
                 if issue_id != issue.issue_id:
                     continue
                 mode = str(self.diff_boxes[row].currentData() or "")
-                status = ("Chưa áp dụng" if complete and not is_saved else
-                          "Đã áp dụng" if is_saved else
+                status = ("Chưa lưu" if complete and not is_saved else
+                          "Đã lưu" if is_saved else
                           "Cần nhập giá trị" if mode == "CUSTOM" and conflict.conflict_id not in choices else
                           "Để sau" if saved and saved.action == RESOLUTION_SKIP and not mode else
                           "Chưa chọn")
-                self._set_status(self.diff_table, row, 6, status)
+                self._set_status(self.diff_table, row, 7, "Xử lý sau" if saved and saved.action == RESOLUTION_SKIP else status)
         self.field_apply.setEnabled(ready > 0)
-        self.field_apply.setText(f"Lưu cách xử lý cho {ready} chứng từ" if ready else "Lưu cách xử lý số liệu")
+        self.field_apply.setText("Lưu dữ liệu")
         self.update_rule_action()
 
     def update_rule_action(self, *_args):
@@ -731,7 +815,7 @@ class GuidedImportResolutionDialog(ResizableDialog):
         self.refresh_review()
 
     def _fill_edit_table(self):
-        issues = [issue for issue in self.current_issues(EDIT_KINDS) if issue in self.sandbox.analysis.unresolved_issues]
+        issues = self.current_issues(EDIT_KINDS)
         self.edit_ids = [issue.issue_id for issue in issues]
         self.edit_table.setRowCount(len(issues))
         for index, issue in enumerate(issues):
@@ -742,7 +826,12 @@ class GuidedImportResolutionDialog(ResizableDialog):
                 self.edit_table.setItem(index, col, read_only(value))
             self.edit_table.setItem(index, 3, QTableWidgetItem(day))
             self.edit_table.setItem(index, 4, QTableWidgetItem(container))
-            self.edit_table.setItem(index, 5, read_only("Cần sửa"))
+            if self._is_deferred(issue.issue_id):
+                for col in (3, 4):
+                    item = self.edit_table.item(index, col)
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            self.edit_table.setItem(index, 5, read_only("Xử lý sau" if self._is_deferred(issue.issue_id) else "Cần sửa"))
+            self._paint_deferred(self.edit_table, index, self._is_deferred(issue.issue_id))
 
     def _fill_choice_table(self):
         issues = self.current_issues(CHOOSE_KINDS)
@@ -764,7 +853,11 @@ class GuidedImportResolutionDialog(ResizableDialog):
             box.currentIndexChanged.connect(lambda _value, row=index: self._choice_changed(row))
             self.choice_table.setCellWidget(index, 4, box)
             self.choice_boxes.append(box)
-            self.choice_table.setItem(index, 5, read_only("Để sau" if saved and saved.action == RESOLUTION_SKIP else "Đã chọn" if saved else "Chưa chọn"))
+            self.choice_table.setItem(index, 5, read_only("Xử lý sau" if saved and saved.action == RESOLUTION_SKIP else "Đã chọn" if saved else "Chưa chọn"))
+            box.setEnabled(not self._is_deferred(issue.issue_id))
+            if self._is_deferred(issue.issue_id):
+                box.setStyleSheet("background: #FFF1B8; color: #785A00;")
+            self._paint_deferred(self.choice_table, index, self._is_deferred(issue.issue_id))
     def _choice_changed(self, row: int):
         if self._refreshing:
             return
@@ -787,7 +880,8 @@ class GuidedImportResolutionDialog(ResizableDialog):
         self.diff_inputs = []
         self.diff_table.setRowCount(len(pairs))
         for row_index, (issue, conflict) in enumerate(pairs):
-            values = (self.source_label(issue), conflict.field_name, shown(conflict.current_value), shown(conflict.new_value))
+            values = (self.source_label(issue), self._issue_sqt(issue, conflict), conflict.field_name,
+                      shown(conflict.current_value), shown(conflict.new_value))
             for col, value in enumerate(values):
                 self.diff_table.setItem(row_index, col, read_only(value))
             box = QComboBox()
@@ -805,11 +899,17 @@ class GuidedImportResolutionDialog(ResizableDialog):
             box.currentIndexChanged.connect(lambda _index, target=editor, source=box: target.setEnabled(source.currentData() == "CUSTOM"))
             box.currentIndexChanged.connect(self.update_field_actions)
             editor.textChanged.connect(self.update_field_actions)
-            self.diff_table.setCellWidget(row_index, 4, box)
-            self.diff_table.setCellWidget(row_index, 5, editor)
+            self.diff_table.setCellWidget(row_index, 5, box)
+            self.diff_table.setCellWidget(row_index, 6, editor)
             self.diff_boxes.append(box)
             self.diff_inputs.append(editor)
-            self.diff_table.setItem(row_index, 6, read_only("Để sau" if saved and saved.action == RESOLUTION_SKIP else "Đã chọn" if saved else "Chưa chọn"))
+            self.diff_table.setItem(row_index, 7, read_only("Xử lý sau" if saved and saved.action == RESOLUTION_SKIP else "Đã chọn" if saved else "Chưa chọn"))
+            box.setEnabled(not self._is_deferred(issue.issue_id))
+            editor.setEnabled(not self._is_deferred(issue.issue_id) and box.currentData() == "CUSTOM")
+            if self._is_deferred(issue.issue_id):
+                box.setStyleSheet("background: #FFF1B8; color: #785A00;")
+                editor.setStyleSheet("background: #FFF1B8;")
+            self._paint_deferred(self.diff_table, row_index, self._is_deferred(issue.issue_id))
         old_field = self.field_filter.currentText()
         self.field_filter.blockSignals(True)
         self.field_filter.clear()
@@ -841,7 +941,7 @@ class GuidedImportResolutionDialog(ResizableDialog):
                 box.setCurrentIndex(box.findData(mode))
                 count += 1
         self.update_field_actions()
-        self.feedback.setText(f"Đã điền cách xử lý cho {count} trường đang hiện. Kiểm tra ngoại lệ rồi bấm Lưu cách xử lý.")
+        self.feedback.setText(f"Đã điền cách xử lý cho {count} trường đang hiện. Kiểm tra ngoại lệ rồi bấm Lưu dữ liệu.")
 
     def apply_edits(self):
         changes = []
@@ -873,8 +973,8 @@ class GuidedImportResolutionDialog(ResizableDialog):
         if not self._reanalyze_or_restore(old_payload, old_resolutions, old_drafts):
             return
         new_ids = {issue.issue_id for issue in self.sandbox.analysis.unresolved_issues}
-        self.last_deferred = None
-        self.undo_button.setVisible(False)
+        if not self._persist_current():
+            return
         self.refresh_ui(capture=False)
         self.feedback.setText(f"PM đã kiểm tra lại {len(changes)} dòng: {len(old_ids - new_ids)} vấn đề hết, {len(new_ids - old_ids)} vấn đề mới phát sinh.")
         self._advance_if_done(0)
@@ -898,8 +998,8 @@ class GuidedImportResolutionDialog(ResizableDialog):
         if not self._reanalyze_or_restore(old_payload, old_resolutions):
             return
         new_ids = {issue.issue_id for issue in self.sandbox.analysis.unresolved_issues}
-        self.last_deferred = None
-        self.undo_button.setVisible(False)
+        if not self._persist_current():
+            return
         self.refresh_ui(capture=False)
         self.feedback.setText(f"PM đã ghép lại {len(selected)} chứng từ: {len(old_ids - new_ids)} vấn đề hết, {len(new_ids - old_ids)} vấn đề mới phát sinh. Bill còn lại giữ PENDING để xử lý sau.")
         self._advance_if_done(1)
@@ -937,56 +1037,76 @@ class GuidedImportResolutionDialog(ResizableDialog):
             self.sandbox.resolutions[issue_id] = IssueResolution(issue_id, RESOLUTION_FIELDS, field_choices=choices)
         if not self._reanalyze_or_restore(old_payload, old_resolutions):
             return
-        self.last_deferred = None
-        self.undo_button.setVisible(False)
+        if not self._persist_current():
+            return
         self.refresh_ui(capture=False)
         self.feedback.setText(f"PM đã ghi nhận lựa chọn số liệu cho {len(to_apply)} chứng từ. File theo dõi chưa được ghi.")
         self._advance_if_done(2)
 
-    def defer_selected(self, group: str):
+    def _group_selection(self, group: str) -> list[ImportIssue]:
         table, ids = {"edit": (self.edit_table, self.edit_ids),
                       "choice": (self.choice_table, self.choice_ids),
                       "diff": (self.diff_table, [issue_id for issue_id, _ in self.diff_rows])}[group]
-        row = table.currentRow()
-        if not 0 <= row < len(ids):
-            QMessageBox.information(self, "Chưa chọn dòng", "Hãy chọn một dòng trong bảng.")
+        rows = self._selected_rows(table)
+        if not rows and table.currentRow() >= 0:
+            rows = [table.currentRow()]
+        selected_ids = {ids[row] for row in rows if row < len(ids)}
+        return [issue for issue in self.sandbox.analysis.issues if issue.issue_id in selected_ids]
+
+    def defer_selected(self, group: str):
+        selected = [issue for issue in self._group_selection(group) if not self._is_deferred(issue.issue_id)]
+        if not selected:
+            QMessageBox.information(self, "Chưa chọn dòng", "Hãy chọn chứng từ cần xử lý sau.")
             return
-        issue_id = ids[row]
-        issue = next(issue for issue in self.sandbox.analysis.issues if issue.issue_id == issue_id)
         self.capture_drafts()
         old_payload = self.sandbox.payload
         old_resolutions = dict(self.sandbox.resolutions)
         old_drafts = (dict(self.edit_drafts), dict(self.choice_drafts), dict(self.field_drafts))
-        old_deferred = self.last_deferred
-        self.last_deferred = (issue_id, self.sandbox.resolutions.get(issue_id))
-        for conflict in issue.conflicts:
-            self.field_drafts.pop(conflict.conflict_id, None)
-        self.choice_drafts.pop(issue_id, None)
-        self.sandbox.resolutions[issue_id] = IssueResolution(issue_id, RESOLUTION_SKIP)
+        for issue in selected:
+            deferred_id = ROW_DEFER_PREFIX + issue.issue_id
+            metadata = {
+                "kind": issue.kind,
+                "doc_type": issue.doc_type,
+                "container": issue.container,
+                "reference": issue.reference,
+                "match_date": issue.match_date,
+                "json_indexes": issue.json_indexes,
+                "conflicts": [
+                    {"conflict_id": conflict.conflict_id, "target_row": conflict.target_row,
+                     "field_name": conflict.field_name, "current_value": shown(conflict.current_value),
+                     "new_value": shown(conflict.new_value), "target_sheet": conflict.target_sheet}
+                    for conflict in issue.conflicts
+                ],
+            }
+            self.sandbox.resolutions.pop(issue.issue_id, None)
+            self.sandbox.resolutions[deferred_id] = IssueResolution(
+                deferred_id, RESOLUTION_SKIP, field_choices=metadata,
+            )
+            for conflict in issue.conflicts:
+                self.field_drafts.pop(conflict.conflict_id, None)
+            self.choice_drafts.pop(issue.issue_id, None)
         if not self._reanalyze_or_restore(old_payload, old_resolutions, old_drafts):
-            self.last_deferred = old_deferred
+            return
+        if not self._persist_current():
             return
         self.refresh_ui(capture=False)
-        self.undo_button.setVisible(True)
-        self.feedback.setText(f"Đã để {issue.doc_label.lower()} này sang lần nhập sau. Có thể hoàn tác ngay.")
-        self._advance_if_done({"edit": 0, "choice": 1, "diff": 2}[group])
+        deferred_rows = len({index for issue in selected for index in issue.json_indexes})
+        self.feedback.setText(f"Đã đánh dấu {deferred_rows} dòng chứng từ xử lý sau. Chọn dòng vàng rồi bấm Hoàn tác để đưa trở lại.")
 
-    def undo_defer(self):
-        if not self.last_deferred:
+    def undo_defer(self, group: str = "diff"):
+        selected = [issue for issue in self._group_selection(group) if self._is_deferred(issue.issue_id)]
+        if not selected:
             return
-        issue_id, previous = self.last_deferred
         old_payload = self.sandbox.payload
         old_resolutions = dict(self.sandbox.resolutions)
-        if previous is None:
-            self.sandbox.resolutions.pop(issue_id, None)
-        else:
-            self.sandbox.resolutions[issue_id] = previous
+        for issue in selected:
+            self.sandbox.resolutions.pop(issue.issue_id, None)
         if not self._reanalyze_or_restore(old_payload, old_resolutions):
             return
-        self.last_deferred = None
-        self.undo_button.setVisible(False)
+        if not self._persist_current():
+            return
         self.refresh_ui(capture=False)
-        self.feedback.setText("Đã hoàn tác. Chứng từ trở lại trạng thái trước khi để sau.")
+        self.feedback.setText(f"Đã hoàn tác xử lý sau cho {len(selected)} chứng từ.")
 
     def on_tab_change(self, index: int):
         if index == 3:
@@ -1021,17 +1141,82 @@ class GuidedImportResolutionDialog(ResizableDialog):
             details.append("<b>Giữ PENDING để xử lý sau:</b> " + html.escape(" · ".join(skipped_names)))
         self.review_attention.setText("<br>".join(details) if details else "<b>Không có chứng từ nào cần xử lý sau.</b>")
         changes = []
+        self._review_changes = []
         for change in analysis.info_changes:
-            changes.append(("Quyết toán", "Tạo dòng mới" if change.action == "CREATE" else "Cập nhật dòng", change.sqt,
-                            change.values.get("Số Container"), change.target_sheet or "Thông tin quyết toán"))
+            sheet = change.target_sheet or "Thông tin quyết toán"
+            details = self._change_details(change, sheet, expense=False)
+            position = f"{sheet}, dòng {change.target_row}" if change.target_row else f"{sheet}, dòng mới"
+            changes.append(("Quyết toán", "Tạo dòng mới" if change.action == "CREATE" else "Cập nhật dòng",
+                            change.sqt, change.values.get("Số Container"), position, self._change_summary(details)))
+            self._review_changes.append((change, details, position))
         for change in analysis.expense_changes:
-            changes.append(("Khoản chi", "Tạo dòng mới" if change.action == "CREATE" else "Cập nhật dòng", change.values.get("SQT PM"),
-                            change.values.get("Số Container"), "Bảng Khoản chi"))
+            details = self._change_details(change, EXPENSE_SHEET, expense=True)
+            position = f"{EXPENSE_SHEET}, dòng {change.target_row}" if change.target_row else f"{EXPENSE_SHEET}, dòng mới"
+            changes.append(("Khoản chi", "Tạo dòng mới" if change.action == "CREATE" else "Cập nhật dòng",
+                            change.values.get("SQT PM"), change.values.get("Số Container"), position,
+                            self._change_summary(details)))
+            self._review_changes.append((change, details, position))
         self.review_table.setRowCount(len(changes))
         for row, values in enumerate(changes):
             for col, value in enumerate(values):
                 self.review_table.setItem(row, col, read_only(value))
+        if changes and self.review_table.currentRow() < 0:
+            self.review_table.selectRow(0)
+        self.update_review_detail()
         self.finish_button.setEnabled(waiting == 0 and not unapplied)
+
+    @staticmethod
+    def _change_summary(details: list[tuple[str, str, str]]) -> str:
+        if not details:
+            return "Không đổi ô dữ liệu"
+        names = ", ".join(item[0] for item in details[:3])
+        return f"{len(details)} trường: {names}" + ("…" if len(details) > 3 else "")
+
+    def _change_details(self, change, sheet: str, *, expense: bool) -> list[tuple[str, str, str]]:
+        current = self.sandbox.workbook_rows.get((sheet, change.target_row), {}) if change.target_row else {}
+        conflict_by_name = {conflict.field_name: conflict for conflict in change.conflicts}
+        internal = {"MD5", "Trạng thái nhập", "Ngày cập nhật", "Ngày nhập cuối"}
+        details = []
+        for name, new_value in change.values.items():
+            if name in internal or new_value in (None, ""):
+                continue
+            old_value = current.get(name)
+            if change.action == "UPDATE":
+                conflict = conflict_by_name.get(name)
+                if conflict and not self.analysis.conflict_decisions.get(conflict.conflict_id, False):
+                    continue
+                if not conflict and old_value not in (None, "") and not (expense and name == "Nơi đóng"):
+                    continue
+                if shown(old_value) == shown(new_value):
+                    continue
+            details.append((name, shown(old_value) or "Trống", shown(new_value)))
+        return details
+
+    def update_review_detail(self):
+        row = self.review_table.currentRow()
+        if not hasattr(self, "_review_changes") or not 0 <= row < len(self._review_changes):
+            self.review_details.setHtml("Chọn một dòng ở bảng trên để xem các trường sẽ ghi.")
+            return
+        change, details, position = self._review_changes[row]
+        sources = []
+        md5s = set(change.document_md5s)
+        for source in self.sandbox.payload.get("du_lieu_boc_tach") or []:
+            if str(source.get("ma_md5_file") or "").strip().lower() in md5s:
+                name = str(source.get("file_nguon") or "").strip()
+                if name and name not in sources:
+                    sources.append(name)
+        title = "Tạo dòng mới" if change.action == "CREATE" else "Cập nhật dòng đang có"
+        parts = [f"<b>{title}</b> · {html.escape(position)} · SQT {html.escape(shown(change.values.get('SQT PM')) or '—')}"]
+        if sources:
+            parts.append("<b>Chứng từ nguồn:</b> " + html.escape(" · ".join(sources)))
+        if details:
+            parts.append("<b>Các ô sẽ ghi:</b><br>" + "<br>".join(
+                f"• <b>{html.escape(name)}</b>: {html.escape(old)} → {html.escape(new)}"
+                for name, old, new in details
+            ))
+        else:
+            parts.append("Không có ô dữ liệu nào thay đổi; chứng từ chỉ được ghi nhận vào thông tin theo dõi.")
+        self.review_details.setHtml("<br><br>".join(parts))
 
     def finish(self):
         if not self._check_unapplied():
@@ -1062,6 +1247,13 @@ class GuidedImportResolutionDialog(ResizableDialog):
     def save_and_close(self):
         if not self._check_unapplied():
             return
+        if not self._persist_current():
+            return
+        self.saved_only = True
+        self.accept()
+
+    def _persist_current(self) -> bool:
+        """Save the current working decisions without writing the workbook."""
         try:
             save_extract_payload(self.analysis.output_path, self.sandbox.payload)
             saved = self.sandbox.service.analyze(
@@ -1071,14 +1263,18 @@ class GuidedImportResolutionDialog(ResizableDialog):
             )
             self.sandbox.service.save_resolution_draft(saved.output_path, saved.daily_path, saved.resolutions)
             self.sandbox.service.save_work_in_progress(saved, saved.resolutions)
-        except DailyImportError as exc:
+            source_key, _ = self.sandbox.service._deferred_identity(saved)
+            batch = self.sandbox.service.database.get_deferred_batch_by_key(source_key)
+            if batch:
+                saved.deferred_batch_id = batch["id"]
+        except (DailyImportError, OSError) as exc:
             notify.error(self, "Không lưu được xử lý", str(exc))
-            return
+            return False
         self.sandbox.analysis = saved
         self.sandbox.resolutions = dict(saved.resolutions)
-        self.saved_only = True
         self._dirty = False
-        self.accept()
+        self._has_saved_draft = True
+        return True
 
     def reject(self):  # noqa: N802 - Qt API
         if (self._dirty or self._unapplied_step() is not None) and not notify.confirm(
@@ -1087,6 +1283,10 @@ class GuidedImportResolutionDialog(ResizableDialog):
             tone="warning", confirm_variant="danger",
         ):
             return
-        super().reject()
+        if self._has_saved_draft:
+            self.saved_only = True
+            self.accept()
+        else:
+            super().reject()
 
 

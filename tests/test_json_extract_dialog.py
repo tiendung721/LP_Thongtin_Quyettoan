@@ -45,7 +45,9 @@ class JsonExtractDialogTests(unittest.TestCase):
         dialog.type_filter.setCurrentText("Mọi chứng từ")
         dialog._sort_by(0)
         self.assertEqual(dialog._visible_indices, [0, 2, 1])
-        dialog.status_filter.setCurrentText("Có cảnh báo")
+        self.assertNotIn("Cảnh báo", dialog.COLUMNS)
+        self.assertEqual(dialog.status_filter.findText("Có cảnh báo"), -1)
+        dialog.status_filter.setCurrentText("Cần kiểm tra")
         self.assertEqual(dialog._visible_indices, [1])
         self.assertEqual(dialog._selected_index(), 1)
         with patch("app.daily_import_ui.notify.confirm", return_value=True):
@@ -84,8 +86,8 @@ class JsonExtractDialogTests(unittest.TestCase):
         dialog = JsonExtractDialog(str(self.path))
         self.assertEqual(dialog.summary_values["warnings"].text(), "2")
         self.assertEqual(dialog.summary_values["need_check"].text(), "2")
-        self.assertEqual(dialog._row_cells(0, dialog.rows[0], DOC_EXPENSE)[10], "1 cảnh báo")
-        dialog.status_filter.setCurrentText("Có cảnh báo")
+        self.assertEqual(dialog._row_cells(0, dialog.rows[0], DOC_EXPENSE)[9], "Cần kiểm tra")
+        dialog.status_filter.setCurrentText("Cần kiểm tra")
         self.assertEqual(set(dialog._visible_indices), {0, 1})
 
 
