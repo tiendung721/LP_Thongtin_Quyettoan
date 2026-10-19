@@ -16,7 +16,13 @@ from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 
 from .. import file_utils
-from ..daily_import import INFO_SHEET, is_month_info_sheet
+from ..daily_import import (
+    EXPENSE_SHEET,
+    INFO_SHEET,
+    is_month_info_sheet,
+    parse_date,
+    parse_number,
+)
 
 SQT_COLUMN = "SQT PM"
 STATUS_COLUMN = "Trạng thái nhập"
@@ -67,12 +73,23 @@ class MultipleSheetsSelectedError(SqtSelectionError):
 
 
 @dataclass(frozen=True)
+class SqtSourceRow:
+    row_number: int
+    container: str = ""
+    close_date: str = ""
+    imported: bool = False
+    total_amount: float | None = None
+    material_price: float | None = None
+
+
+@dataclass(frozen=True)
 class SqtSelectionItem:
     value: str
     row_count: int
     sheet_name: str = ""
     row_numbers: tuple[int, ...] = ()
     imported_row_count: int = 0
+    source_rows: tuple[SqtSourceRow, ...] = ()
 
     @property
     def pending_row_count(self) -> int:
@@ -91,6 +108,20 @@ class SqtSelectionItem:
         if self.sheet_name:
             return f"{self.value} — {self.row_count} dòng — {self.sheet_name}"
         return f"{self.value} — {self.row_count} dòng"
+
+    @property
+    def status_kind(self) -> str:
+        if self.is_fully_imported:
+            return "done"
+        return "partial" if self.is_partially_imported else "pending"
+
+    @property
+    def status_text(self) -> str:
+        if self.is_fully_imported:
+            return "Đã nhập"
+        if self.is_partially_imported:
+            return f"Đã nhập {self.imported_row_count}/{self.row_count}"
+        return "Chưa nhập"
 
     def to_selection_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"sqt": self.value}
@@ -143,6 +174,23 @@ def _header_map(ws) -> dict[str, int]:
     }
 
 
+def _cell(row: tuple[Any, ...], column: int | None) -> Any:
+    return row[column - 1] if column and column <= len(row) else None
+
+
+def _text_cell(value: Any) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _money_cell(value: Any) -> float | None:
+    number = parse_number(value)
+    if number is None and isinstance(value, str):
+        compact = re.sub(r"\s*(?:đ|vnđ)\s*$", "", value.strip(), flags=re.IGNORECASE)
+        if re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+", compact):
+            number = float(compact.replace(".", ""))
+    return number if number is not None and math.isfinite(number) else None
+
+
 def _info_sheet_names(wb, requested_sheet: str) -> list[str]:
     if requested_sheet in wb.sheetnames:
         return [requested_sheet]
@@ -182,7 +230,17 @@ def read_sqt_items(daily_file: str, sheet_name: str = INFO_SHEET) -> List[SqtSel
 
             sqt_col = headers[SQT_COLUMN]
             status_col = headers.get(STATUS_COLUMN)
-            max_col = max(sqt_col, status_col or sqt_col)
+            container_col = headers.get("Số Container")
+            date_col = (
+                headers.get("Ngày tháng") if current_sheet == EXPENSE_SHEET
+                else headers.get("Ngày Đóng", headers.get("Ngày đóng"))
+            )
+            total_col = headers.get("Tổng tiền") if current_sheet == EXPENSE_SHEET else None
+            material_col = headers.get("Giá vật liệu") if current_sheet == EXPENSE_SHEET else None
+            max_col = max(
+                col for col in (sqt_col, status_col, container_col, date_col, total_col, material_col)
+                if col is not None
+            )
             for row_number, row in enumerate(
                 ws.iter_rows(
                     min_row=2,
@@ -192,18 +250,29 @@ def read_sqt_items(daily_file: str, sheet_name: str = INFO_SHEET) -> List[SqtSel
                 ),
                 start=2,
             ):
-                sqt = normalize_sqt_value(row[sqt_col - 1] if row else None)
+                sqt = normalize_sqt_value(_cell(row, sqt_col))
                 if not sqt:
                     continue
                 key = (current_sheet if len(sheet_names) > 1 else "", sqt)
                 entry = counts.setdefault(
                     key,
-                    {"row_numbers": [], "imported_row_count": 0},
+                    {"row_numbers": [], "imported_row_count": 0, "source_rows": []},
                 )
                 entry["row_numbers"].append(row_number)
-                status = row[status_col - 1] if status_col and row else None
-                if is_imported_status(status):
+                imported = is_imported_status(_cell(row, status_col))
+                if imported:
                     entry["imported_row_count"] += 1
+                raw_date = _cell(row, date_col)
+                entry["source_rows"].append(
+                    SqtSourceRow(
+                        row_number=row_number,
+                        container=_text_cell(_cell(row, container_col)),
+                        close_date=parse_date(raw_date) or _text_cell(raw_date),
+                        imported=imported,
+                        total_amount=_money_cell(_cell(row, total_col)),
+                        material_price=_money_cell(_cell(row, material_col)),
+                    )
+                )
 
         if not counts:
             raise EmptySqtListError("Sheet không có SQT hợp lệ.")
@@ -214,6 +283,7 @@ def read_sqt_items(daily_file: str, sheet_name: str = INFO_SHEET) -> List[SqtSel
                 sheet_name=sheet,
                 row_numbers=tuple(entry["row_numbers"]),
                 imported_row_count=entry["imported_row_count"],
+                source_rows=tuple(entry["source_rows"]),
             )
             for (sheet, sqt), entry in counts.items()
         ]

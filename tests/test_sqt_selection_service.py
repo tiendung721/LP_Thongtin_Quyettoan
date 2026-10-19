@@ -100,6 +100,31 @@ class SqtSelectionServiceTests(unittest.TestCase):
                 ("702", 1, 0, 1, False, False),
             ],
         )
+        self.assertEqual([row.container for row in items[0].source_rows], ["CONT01", "CONT02"])
+        self.assertEqual([row.imported for row in items[0].source_rows], [True, False])
+
+    def test_read_sqt_items_includes_info_dates_and_expense_amounts(self) -> None:
+        wb = Workbook()
+        info = wb.active
+        info.title = INFO_SHEET
+        info.append(["SQT PM", "Số Container", "Ngày Đóng", "Trạng thái nhập"])
+        info.append([700, "ABCD1234567", "12/10/2026", "Chưa nhập"])
+        expense = wb.create_sheet(EXPENSE_SHEET)
+        expense.append(["SQT PM", "Số Container", "Ngày tháng", "Tổng tiền", "Giá vật liệu", "Trạng thái nhập"])
+        expense.append([700, "ABCD1234567", "12/10/2026", "4.950.000 đ", 3_000_000, "Chưa nhập"])
+        expense.append([700, "EFGH1234567", "13/10/2026", 2_000_000, None, "Đã nhập"])
+        wb.save(self.daily)
+        wb.close()
+
+        info_items = read_sqt_items(str(self.daily), INFO_SHEET)
+        expense_items = read_sqt_items(str(self.daily), EXPENSE_SHEET)
+
+        self.assertEqual(info_items[0].source_rows[0].close_date, "2026-10-12")
+        self.assertIsNone(info_items[0].source_rows[0].total_amount)
+        self.assertEqual(expense_items[0].row_count, 2)
+        self.assertEqual(expense_items[0].status_text, "Đã nhập 1/2")
+        self.assertEqual([row.total_amount for row in expense_items[0].source_rows], [4_950_000, 2_000_000])
+        self.assertEqual([row.material_price for row in expense_items[0].source_rows], [3_000_000, None])
 
     def test_read_sqt_items_keeps_first_seen_order_and_counts_rows(self) -> None:
         self._make_daily([596, 596.0, "597", "", None, "596", 598.0])

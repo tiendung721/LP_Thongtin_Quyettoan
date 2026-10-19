@@ -148,32 +148,34 @@ QAbstractItemView QLineEdit {
 }
 QCheckBox { spacing: 8px; color: #374151; }
 
-/* ---------- Chọn SQT theo luồng trạng thái ---------- */
-QTabWidget#sqtStatusTabs::pane {
-    background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 9px;
-    top: -1px;
+/* ---------- Bảng chọn SQT và khung chi tiết ---------- */
+QLabel#sqtDialogTitle { font-size: 16pt; font-weight: 700; color: #102F54; }
+QLabel#sqtDialogKind, QLabel#sqtFilterLabel { color: #476889; font-size: 9pt; }
+QLabel#sqtCountBadge { color: #1D4ED8; background: #E6F0FF; padding: 7px 11px; border-radius: 9px; font-weight: 600; }
+QLabel#sqtSourceLabel { background: #FFFFFF; border: 1px solid #D1D5DB; border-radius: 8px; padding: 9px 10px; }
+QLabel#sqtTopSummary { color: #173B65; background: #EFF6FF; border: 1px solid #D3E4FA; border-radius: 8px; padding: 8px 12px; font-weight: 600; }
+QLabel#sqtSelectionSummary, QLabel#sqtDetailMeta { color: #55708D; font-size: 9.5pt; }
+QLabel#sqtDetailTitle { color: #12365F; font-size: 12pt; font-weight: 700; }
+QLabel#sqtDetailStatus { border-radius: 8px; padding: 4px 9px; font-weight: 600; }
+QLabel#sqtDetailStatus[tone="pending"], QLabel#sqtDetailStatus[tone="partial"] { color: #9A5B0A; background: #FFF0D8; }
+QLabel#sqtDetailStatus[tone="done"] { color: #157347; background: #DCF5E7; }
+QLabel#sqtDetailRowTitle, QLabel#sqtDetailAmount { color: #153B68; font-weight: 700; }
+QFrame#sqtDetailPanel, QFrame#sqtDetailCard { background: #FFFFFF; border: 1px solid #D8E3F0; border-radius: 9px; }
+QFrame#sqtDivider { background: #DBE5F0; min-height: 1px; max-height: 1px; }
+QWidget#sqtDetailHost { background: #F6F8FB; }
+QTableWidget#sqtSelectionTable {
+    background: #FFFFFF; alternate-background-color: #F8FAFD;
+    border: 1px solid #D8E3F0; border-radius: 8px;
+    gridline-color: #E0E8F2; selection-background-color: #DCEAFF;
+    selection-color: #12365F; outline: 0;
 }
-QTabWidget#sqtStatusTabs QTabBar::tab {
-    background: #F3F4F6; color: #64748B; border: 1px solid #E5E7EB;
-    padding: 10px 28px; min-width: 150px; font-weight: 700;
+QTableWidget#sqtSelectionTable::item { padding: 6px 8px; }
+QTableWidget#sqtSelectionTable::item:selected { background: #DCEAFF; color: #12365F; }
+QTableWidget#sqtSelectionTable QHeaderView::section {
+    background: #EAF0F7; color: #173D68; border: 0;
+    border-right: 1px solid #D6E1EE; border-bottom: 1px solid #D6E1EE;
+    padding: 8px 5px; font-weight: 600;
 }
-QTabWidget#sqtStatusTabs QTabBar::tab:first {
-    border-top-left-radius: 8px;
-}
-QTabWidget#sqtStatusTabs QTabBar::tab:last {
-    border-top-right-radius: 8px;
-}
-QTabWidget#sqtStatusTabs QTabBar::tab:selected {
-    background: #EFF6FF; color: #1D4ED8; border-color: #93C5FD;
-}
-QFrame#sqtSelectionRow {
-    background: #FFFFFF; border: 1px solid #E5E7EB; border-radius: 8px;
-}
-QFrame#sqtSelectionRow:hover { border-color: #93C5FD; background: #FAFCFF; }
-QCheckBox#sqtChoice { font-weight: 600; color: #111827; }
-QLabel#sqtRowCount { color: #64748B; }
-QLabel#sqtPartialHint { color: #B45309; font-size: 9pt; padding-left: 25px; }
-QLabel#sqtSelectionSummary { color: #475569; font-size: 9.5pt; }
 
 /* ---------- Thanh tiến trình ---------- */
 QProgressBar {
