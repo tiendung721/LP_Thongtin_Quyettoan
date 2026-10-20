@@ -182,7 +182,7 @@ D:\RPA_QuyetToan
 ├── Launcher\      Mo_Tro_Ly_Quyet_Toan.bat, Chay_PAD_Quyet_Toan.bat
 ├── output\        File JSON bóc tách và quyet_toan_hang_ngay.xlsx
 ├── Database\      app_state.db
-└── Logs\          app_YYYYMMDD.log
+└── Logs\          app_YYYYMMDD.log (log phiên hiện tại; log cũ xóa khi mở PM)
 ```
 
 ## 9. Cấu trúc mã nguồn
@@ -233,6 +233,7 @@ File `.exe` sẽ nằm trong thư mục `dist\QuyetToanAssistant\`.
 - Chỉ các dòng có **Trạng thái kiểm tra = OK** và **Trạng thái nhập = Chưa nhập**
   mới đủ điều kiện cho luồng RPA ở Bước 4.
 - Mọi lỗi được ghi vào log tại `D:\RPA_QuyetToan\Logs\app_YYYYMMDD.log`.
+  Khi mở lại PM, các file `.log` cũ trong thư mục `Logs` được xóa để bắt đầu nhật ký mới.
 
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1

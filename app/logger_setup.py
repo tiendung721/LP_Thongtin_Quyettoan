@@ -1,6 +1,7 @@
 """Thiết lập logging cho ứng dụng.
 
-Ghi log ra cả file (theo ngày) và console. Tên logger dùng chung cho toàn app
+Mỗi lần khởi động, xóa log của phiên trước rồi ghi ra file và console.
+Tên logger dùng chung cho toàn app
 để các module khác chỉ cần ``logging.getLogger("QuyetToan")``.
 """
 
@@ -9,12 +10,25 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime
+from pathlib import Path
 
 LOGGER_NAME = "QuyetToan"
 
 # Định dạng log dùng giờ local của máy (không dùng UTC).
 _FILE_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def clear_previous_logs(logs_dir: str) -> list[str]:
+    """Xóa các file .log trực tiếp trong thư mục Logs trước khi mở log mới."""
+    failures = []
+    for path in Path(logs_dir).iterdir():
+        if path.is_file() and path.suffix.lower() == ".log":
+            try:
+                path.unlink()
+            except OSError as exc:
+                failures.append(f"{path}: {exc}")
+    return failures
 
 
 def setup_logger(logs_dir: str, level: int = logging.INFO) -> logging.Logger:
@@ -26,8 +40,6 @@ def setup_logger(logs_dir: str, level: int = logging.INFO) -> logging.Logger:
     """
     os.makedirs(logs_dir, exist_ok=True)
 
-    log_file = os.path.join(logs_dir, f"app_{datetime.now():%Y%m%d}.log")
-
     logger = logging.getLogger(LOGGER_NAME)
     logger.setLevel(level)
 
@@ -35,10 +47,12 @@ def setup_logger(logs_dir: str, level: int = logging.INFO) -> logging.Logger:
     if logger.handlers:
         return logger
 
+    failures = clear_previous_logs(logs_dir)
+    log_file = os.path.join(logs_dir, f"app_{datetime.now():%Y%m%d}.log")
     formatter = logging.Formatter(_FILE_FORMAT, _DATE_FORMAT)
 
     # Handler ghi ra file (mã hóa utf-8 để hiển thị tiếng Việt).
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
@@ -48,6 +62,8 @@ def setup_logger(logs_dir: str, level: int = logging.INFO) -> logging.Logger:
     logger.addHandler(console_handler)
 
     logger.propagate = False
+    for failure in failures:
+        logger.warning("Không xóa được log cũ: %s", failure)
     return logger
 
 
