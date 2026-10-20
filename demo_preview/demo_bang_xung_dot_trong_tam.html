@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Demo bảng xử lý xung đột</title>
+  <style>
+    * { box-sizing: border-box; }
+    :root { font-family: "Segoe UI", Arial, sans-serif; color: #19304d; background: #f1f4f8; }
+    body { margin: 0; }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    .app { height: 100vh; min-height: 760px; display: flex; flex-direction: column; padding: 0 18px 12px; }
+    .tabs { display: flex; gap: 3px; flex: none; border-bottom: 1px solid #d8e2ee; }
+    .tab { padding: 14px 18px; color: #687c95; font-size: 14px; background: #e8eef5; border-radius: 7px 7px 0 0; }
+    .tab.active { background: #fff; color: #245fb9; font-weight: 750; box-shadow: inset 0 3px #3771cf; }
+    .main { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 20px 20px 14px; background: #fff; border: 1px solid #dce5ee; border-top: 0; }
+    .heading { display: flex; justify-content: space-between; align-items: start; gap: 15px; }
+    h1 { margin: 0 0 6px; font-size: 23px; letter-spacing: -.35px; color: #142a46; }
+    .hint { margin: 0; color: #647d9b; font-size: 14px; }
+    .demo { padding: 7px 11px; color: #3463a7; background: #edf4fc; border-radius: 7px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+    .toolbar { display: flex; align-items: end; gap: 11px; margin: 22px 0 17px; }
+    .toolbar label { display: grid; gap: 5px; font-size: 12px; color: #54708f; font-weight: 650; }
+    select, input[type=text] { height: 44px; padding: 0 13px; border: 1px solid #c6d6e8; border-radius: 7px; color: #183857; background: #fff; font-size: 14px; }
+    select:focus, input[type=text]:focus { outline: 2px solid #93b9ee; outline-offset: 1px; }
+    .toolbar select { min-width: 170px; }
+    #bulk-rule { min-width: 240px; }
+    button { min-height: 42px; padding: 9px 15px; border: 1px solid #c7d8eb; border-radius: 7px; background: #fff; color: #285c9d; font-size: 13px; font-weight: 700; }
+    button:hover { background: #eff6ff; }
+    button.primary { background: #2864bd; border-color: #2864bd; color: #fff; }
+    button.primary:hover { background: #2057aa; }
+    button:disabled { opacity: .48; cursor: default; }
+    .remaining { margin-left: auto; padding-bottom: 12px; font-size: 13px; color: #6882a2; }
+    .remaining strong { color: #245589; }
+    .table-area { flex: 1; min-height: 0; overflow: auto; border: 1px solid #d5e1ee; border-radius: 8px; background: #fff; }
+    table { border-collapse: separate; border-spacing: 0; table-layout: fixed; width: 100%; min-width: 1000px; }
+    col.check { width: 42px; } col.document { width: 20%; } col.sqt { width: 7%; } col.field { width: 13%; } col.old { width: 17%; } col.fresh { width: 17%; } col.action { width: 18%; } col.result { width: 8%; }
+    th { position: sticky; top: 0; z-index: 1; height: 52px; background: #eaf1f8; color: #304e70; border-bottom: 1px solid #d6e2ef; text-align: left; padding: 0 16px; font-size: 13px; font-weight: 750; }
+    td { height: 198px; padding: 21px 16px; border-bottom: 1px solid #dfe8f2; vertical-align: middle; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:nth-child(even) td { background: #fafcfe; }
+    tbody tr.selected td { background: #edf4ff; }
+    tbody tr.deferred td { background: #fff2c2; }
+    tbody tr:hover:not(.deferred) td { background: #f2f7ff; }
+    td.check { text-align: center; padding-left: 9px; padding-right: 9px; }
+    input[type=checkbox] { width: 18px; height: 18px; accent-color: #2864bd; cursor: pointer; }
+    .doc-kind { display: inline-block; padding: 5px 9px; border-radius: 5px; background: #e8f0fb; color: #285d9e; font-size: 12px; font-weight: 750; }
+    .doc-name { display: block; margin-top: 11px; color: #143c6c; font-size: 19px; font-weight: 750; line-height: 1.25; overflow-wrap: anywhere; }
+    .sub { display: block; color: #6c849e; font-size: 12px; line-height: 1.45; margin-top: 9px; overflow-wrap: anywhere; }
+    .sqt-value { font-size: 23px; font-weight: 800; color: #173d72; }
+    .field-name { display: block; font-size: 19px; font-weight: 750; color: #243b56; }
+    .source-place { display: block; margin-top: 10px; font-size: 12px; line-height: 1.4; color: #6b839f; }
+    .value-label { display: block; font-size: 12px; font-weight: 650; color: #7087a2; margin-bottom: 11px; }
+    .value { display: block; font-size: 28px; line-height: 1.15; color: #243a56; font-weight: 750; overflow-wrap: anywhere; }
+    .fresh .value { color: #285fc0; }
+    .decision { display: grid; gap: 9px; }
+    .decision select, .decision input { width: 100%; }
+    .decision .micro { color: #7389a2; font-size: 12px; }
+    .decision input[hidden] { display: none; }
+    .status { display: inline-block; padding: 8px 10px; color: #627890; background: #edf1f6; border-radius: 6px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .status.saved { color: #14734d; background: #ddf3e7; }
+    .status.deferred { color: #8a6000; background: #ffe4a0; }
+    .inline-status { display: none; }
+    .actions { display: flex; align-items: center; gap: 9px; padding-top: 13px; }
+    .selection { color: #657f9d; font-size: 13px; margin-right: 6px; }
+    .save { margin-left: auto; min-width: 150px; }
+    .footer { display: flex; align-items: center; gap: 8px; padding: 12px 0 0; font-size: 12px; color: #7187a3; }
+    .footer .spacer { flex: 1; }
+    @media (max-width: 1200px) {
+      .toolbar { flex-wrap: wrap; }
+      .remaining { margin-left: 0; }
+      table { min-width: 0; }
+      th:last-child, td:last-child, col.result { display: none; }
+      .inline-status { display: inline-block; margin-top: 2px; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <nav class="tabs"><span class="tab">1. Sửa thông tin (2)</span><span class="tab">2. Chọn Bill / số quyết toán (3)</span><span class="tab active">3. Chọn số liệu (2)</span><span class="tab">4. Xem trước</span></nav>
+  <main class="main">
+    <div class="heading"><div><h1>Chọn số liệu sẽ dùng trong file theo dõi</h1><p class="hint">Đối chiếu giá trị đang có với chứng từ mới, rồi chọn cách xử lý ngay trên từng dòng.</p></div><span class="demo">DEMO GIAO DIỆN · DỮ LIỆU MẪU</span></div>
+    <div class="toolbar"><label>Xem trường<select id="filter" onchange="render()"><option>Tất cả</option><option>Số tấn</option><option>Đơn giá</option></select></label><label>Cách xử lý cho các dòng đang hiện<select id="bulk-rule"><option value="">Chọn cách xử lý</option><option value="current">Giữ số liệu đang có</option><option value="new">Dùng số liệu mới</option></select></label><button onclick="fillVisible()">Điền vào các dòng đang hiện</button><span class="remaining" id="count"></span></div>
+    <div class="table-area"><table><colgroup><col class="check"><col class="document"><col class="sqt"><col class="field"><col class="old"><col class="fresh"><col class="action"><col class="result"></colgroup><thead><tr><th></th><th>Chứng từ</th><th>SQT</th><th>Trường xung đột</th><th>File theo dõi</th><th>Chứng từ mới</th><th>Cách xử lý</th><th>Kết quả</th></tr></thead><tbody id="rows"></tbody></table></div>
+    <div class="actions"><span class="selection" id="selection">Chưa chọn dòng</span><button onclick="deferSelected()">Xử lý sau</button><button onclick="undoSelected()">Hoàn tác</button><button class="primary save" onclick="save()">Lưu dữ liệu</button></div>
+  </main>
+  <footer class="footer"><span id="feedback">Chọn các dòng để xử lý sau. Bản demo không thay đổi file Excel.</span><span class="spacer"></span><button onclick="feedback('Đã đóng bản demo.')">Đóng</button><button class="primary" disabled>Xác nhận nhập</button></footer>
+</div>
+<script>
+  const rows = [
+    {id:1, kind:'Phiếu cân', name:'phieu_can_04.jpg', container:'VSGU2240253', date:'22/06/2026', sqt:'654', field:'Số tấn', place:'Tháng 6 · dòng 63', old:'28', fresh:'30'},
+    {id:2, kind:'Khoản chi', name:'HĐ HD-99', container:'GAOU2620043', date:'14/06/2026', sqt:'614', field:'Đơn giá', place:'Khoản chi · dòng 24', old:'100.000', fresh:'120.000'}
+  ];
+  const state = Object.fromEntries(rows.map(row => [row.id,{selected:false,deferred:false,mode:'',custom:'',saved:false}]));
+  const esc = text => String(text).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  function feedback(text) { document.getElementById('feedback').textContent=text; }
+  function render() {
+    const filter=document.getElementById('filter').value;
+    const shown=rows.filter(row => filter==='Tất cả'||row.field===filter);
+    document.getElementById('count').innerHTML=`Đang hiện <strong>${shown.length}/${rows.length}</strong> dòng xung đột`;
+    document.getElementById('selection').textContent=`${rows.filter(row=>state[row.id].selected).length} dòng được chọn`;
+    document.getElementById('rows').innerHTML=shown.map(row=>{const s=state[row.id];const status=s.deferred?'Xử lý sau':s.saved?'Đã lưu':s.mode?'Chưa lưu':'Chưa chọn';return `<tr class="${s.deferred?'deferred':s.selected?'selected':''}"><td class="check"><input type="checkbox" aria-label="Chọn ${esc(row.kind)} ${esc(row.name)}" ${s.selected?'checked':''} onchange="toggle(${row.id},this.checked)"></td><td><span class="doc-kind">${esc(row.kind)}</span><strong class="doc-name">${esc(row.name)}</strong><span class="sub">Container: ${esc(row.container)}<br>Ngày chứng từ: ${esc(row.date)}</span></td><td><strong class="sqt-value">${esc(row.sqt)}</strong></td><td><strong class="field-name">${esc(row.field)}</strong><span class="source-place">${esc(row.place)}</span></td><td><span class="value-label">GIÁ TRỊ ĐANG CÓ</span><strong class="value">${esc(row.old)}</strong></td><td class="fresh"><span class="value-label">GIÁ TRỊ TỪ CHỨNG TỪ</span><strong class="value">${esc(row.fresh)}</strong></td><td><div class="decision"><select aria-label="Cách xử lý ${esc(row.field)}" ${s.deferred?'disabled':''} onchange="changeMode(${row.id},this.value)"><option value="" ${!s.mode?'selected':''}>Chưa chọn</option><option value="current" ${s.mode==='current'?'selected':''}>Giữ số liệu đang có</option><option value="new" ${s.mode==='new'?'selected':''}>Dùng số liệu mới</option><option value="custom" ${s.mode==='custom'?'selected':''}>Nhập giá trị khác</option></select><input type="text" placeholder="Nhập giá trị khác" value="${esc(s.custom)}" ${s.mode==='custom'&&!s.deferred?'':'hidden'} oninput="state[${row.id}].custom=this.value;state[${row.id}].saved=false"><span class="micro">Áp dụng riêng cho dòng này</span><span class="status inline-status ${s.deferred?'deferred':s.saved?'saved':''}">${status}</span></div></td><td><span class="status ${s.deferred?'deferred':s.saved?'saved':''}">${status}</span></td></tr>`}).join('');
+  }
+  function toggle(id,checked) { state[id].selected=checked; render(); }
+  function changeMode(id,mode) {state[id].mode=mode;state[id].saved=false;render();}
+  function fillVisible() {const mode=document.getElementById('bulk-rule').value;if(!mode){feedback('Hãy chọn cách xử lý trước khi điền.');return;}const filter=document.getElementById('filter').value;let count=0;for(const row of rows)if(!state[row.id].deferred&&(filter==='Tất cả'||row.field===filter)){state[row.id].mode=mode;state[row.id].saved=false;count++;}render();feedback(`Đã điền cách xử lý cho ${count} dòng đang hiện.`);}
+  function deferSelected() {let count=0;for(const row of rows)if(state[row.id].selected&&!state[row.id].deferred){state[row.id].deferred=true;count++;}render();feedback(`Đã tô vàng ${count} dòng để xử lý sau.`);}
+  function undoSelected() {let count=0;for(const row of rows)if(state[row.id].selected&&state[row.id].deferred){state[row.id].deferred=false;count++;}render();feedback(`Đã hoàn tác ${count} dòng.`);}
+  function save() {let count=0;for(const row of rows)if(!state[row.id].deferred&&state[row.id].mode&&(state[row.id].mode!=='custom'||state[row.id].custom.trim())){state[row.id].saved=true;count++;}render();feedback(`Đã ghi nhận ${count} lựa chọn trong bản demo. File Excel chưa thay đổi.`);}
+  render();
+</script>
+</body>
+</html>

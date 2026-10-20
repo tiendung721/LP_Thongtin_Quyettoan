@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Demo bảng xung đột rộng</title>
+  <style>
+    * { box-sizing: border-box; }
+    :root { font-family: "Segoe UI", Arial, sans-serif; color: #182b45; background: #f3f6fa; }
+    body { margin: 0; }
+    button, select, input { font: inherit; }
+    button { cursor: pointer; }
+    .app { min-height: 100vh; display: flex; flex-direction: column; }
+    .top { padding: 16px 30px 0; }
+    .topline { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+    h1 { margin: 0; font-size: 25px; letter-spacing: -.5px; }
+    .badge { color: #4654bc; background: #e9ecff; border-radius: 999px; padding: 8px 13px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+    .summary { margin: 5px 0 9px; font-size: 13px; color: #657a96; }
+    .summary b { color: #24446b; }
+    .tabs { display: flex; gap: 26px; border-bottom: 1px solid #dce5f0; padding: 0 30px; }
+    .tab { padding: 10px 2px 11px; color: #6c7e97; font-size: 14px; white-space: nowrap; }
+    .tab.active { color: #315fc3; font-weight: 700; border-bottom: 3px solid #426ddb; }
+    .workspace { margin: 12px 30px 0; background: #fff; border: 1px solid #dfe7f1; border-radius: 14px; box-shadow: 0 6px 24px #24446b0a; display: flex; flex-direction: column; min-height: 0; flex: 1; }
+    .section { padding: 15px 24px 12px; }
+    h2 { margin: 0 0 5px; font-size: 22px; letter-spacing: -.35px; }
+    .intro { margin: 0; color: #7387a0; font-size: 14px; }
+    .tools { display: flex; align-items: end; gap: 14px; margin-top: 14px; flex-wrap: wrap; }
+    .tool { display: grid; gap: 5px; font-size: 12px; color: #55708e; font-weight: 600; }
+    select, input { background: #fff; color: #1c3554; border: 1px solid #cbd9e9; border-radius: 9px; height: 42px; padding: 0 12px; font-size: 14px; }
+    .tool select { min-width: 170px; }
+    #rule { min-width: 235px; }
+    button { border: 1px solid #ccdaea; background: #fff; color: #315b91; border-radius: 9px; padding: 10px 16px; font-size: 13px; font-weight: 700; }
+    button:hover { background: #eff5fe; }
+    button.primary { border-color: #3267c5; background: #3267c5; color: #fff; }
+    button.primary:hover { background: #2858af; }
+    button:disabled { opacity: .52; cursor: default; }
+    .count { margin-left: auto; color: #6c829e; font-size: 13px; padding-bottom: 11px; }
+    .table-wrap { padding: 0 24px; flex: 1; min-height: 0; overflow: auto; }
+    table { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 1160px; table-layout: fixed; border: 1px solid #dce6f0; border-radius: 10px; overflow: hidden; }
+    col.select { width: 42px; } col.doc { width: 16%; } col.sqt { width: 6%; } col.field { width: 11%; } col.current { width: 15%; } col.new { width: 15%; } col.action { width: 17%; } col.custom { width: 12%; } col.result { width: 8%; }
+    th { position: sticky; top: 0; z-index: 1; height: 52px; background: #edf3f9; color: #385777; font-size: 13px; font-weight: 700; text-align: left; padding: 0 14px; border-bottom: 1px solid #dce6f0; }
+    td { height: 118px; padding: 13px 14px; border-bottom: 1px solid #e5ecf4; vertical-align: middle; background: #fff; }
+    tbody tr:nth-child(even) td { background: #fbfcfe; }
+    tbody tr.checked td { background: #f2f6ff; }
+    tbody tr.deferred td { background: #fff2c6; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover:not(.deferred) td { background: #f3f7ff; }
+    .check-cell { text-align: center; padding-left: 7px; padding-right: 7px; }
+    input[type=checkbox] { width: 17px; height: 17px; accent-color: #3769ca; cursor: pointer; }
+    .doc-title { font-size: 16px; font-weight: 750; color: #163a67; line-height: 1.25; }
+    .doc-sub { display: block; margin-top: 7px; font-size: 12px; color: #68819d; line-height: 1.4; overflow-wrap: anywhere; }
+    .sqt-value { font-size: 18px; font-weight: 750; color: #334b70; }
+    .field-name { font-size: 17px; font-weight: 750; color: #263b58; line-height: 1.25; }
+    .field-note { display: block; margin-top: 5px; color: #7890a9; font-size: 12px; }
+    .value-caption { display: block; color: #8093aa; font-size: 11px; margin-bottom: 6px; }
+    .value { font-size: 21px; font-weight: 750; color: #233956; line-height: 1.2; overflow-wrap: anywhere; }
+    .new-value { color: #365fbc; }
+    .row-select { width: 100%; height: 43px; }
+    .custom-input { width: 100%; height: 43px; }
+    .custom-input:disabled { background: #f4f6f9; }
+    .status { display: inline-flex; align-items: center; border-radius: 999px; padding: 7px 10px; background: #eff2f7; color: #62758b; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .status.done { color: #1d7853; background: #def5e8; }
+    .status.deferred { color: #835b00; background: #ffe2a0; }
+    .table-footer { display: flex; gap: 9px; align-items: center; padding: 11px 24px 12px; }
+    .table-footer .scope { color: #6f849d; font-size: 13px; margin-right: 8px; }
+    .table-footer .save { margin-left: auto; padding: 11px 20px; }
+    .bottom { display: flex; align-items: center; justify-content: space-between; padding: 10px 30px 12px; gap: 15px; color: #7488a2; font-size: 12px; }
+    .bottom-actions { display: flex; gap: 8px; }
+    @media(max-width: 1250px) { .tools { gap: 8px; } .count { margin-left: 0; } .table-wrap { overflow-x: auto; } }
+  </style>
+</head>
+<body>
+<div class="app">
+  <div class="top"><div class="topline"><h1>Xử lý dữ liệu trước khi nhập</h1><span class="badge">BẢN DEMO · DỮ LIỆU MẪU</span></div><p class="summary">Còn <b>4</b> việc cần quyết định &nbsp;·&nbsp; <b>0</b> cần sửa thông tin &nbsp;·&nbsp; <b>0</b> cần chọn Bill/SQT &nbsp;·&nbsp; <b>4</b> cần chọn số liệu &nbsp;·&nbsp; <b id="deferred-count">0</b> dòng xử lý sau</p></div>
+  <nav class="tabs"><span class="tab">1. Sửa thông tin (0)</span><span class="tab">2. Chọn Bill / số quyết toán (0)</span><span class="tab active">3. Chọn số liệu (4)</span><span class="tab">4. Xem trước</span></nav>
+  <main class="workspace">
+    <div class="section"><h2>Chọn số liệu sẽ dùng trong file theo dõi</h2><p class="intro">Mỗi dòng xung đột hiển thị đủ chứng từ, SQT và hai giá trị để đối chiếu. Chọn cách xử lý ngay trên dòng đó.</p>
+      <div class="tools"><label class="tool">Xem trường<select id="filter" onchange="applyFilter()"><option>Tất cả</option><option>Số tấn</option><option>Đơn giá</option><option>Loại hàng</option><option>VT biển</option></select></label><label class="tool">Cách xử lý cho các dòng đang hiện<select id="rule"><option value="">Chọn cách xử lý</option><option value="current">Giữ số liệu đang có</option><option value="new">Dùng số liệu mới</option></select></label><button onclick="fillVisible()">Điền cho các dòng đang hiện</button><span class="count" id="visible-count">Đang hiện 4/4 dòng xung đột</span></div>
+    </div>
+    <div class="table-wrap"><table><colgroup><col class="select"><col class="doc"><col class="sqt"><col class="field"><col class="current"><col class="new"><col class="action"><col class="custom"><col class="result"></colgroup><thead><tr><th></th><th>Chứng từ</th><th>SQT</th><th>Trường xung đột</th><th>File theo dõi</th><th>Chứng từ mới</th><th>Cách xử lý</th><th>Giá trị khác</th><th>Kết quả</th></tr></thead><tbody id="rows"></tbody></table></div>
+    <div class="table-footer"><span class="scope" id="selected-count">Chọn dòng để xử lý sau</span><button onclick="deferRows()">Xử lý sau</button><button onclick="undoRows()">Hoàn tác</button><button class="primary save" onclick="saveRows()">Lưu dữ liệu</button></div>
+  </main>
+  <footer class="bottom"><span id="message">Bản demo giao diện; thao tác ở đây không thay đổi file Excel.</span><div class="bottom-actions"><button onclick="message('Đã đóng bản demo.')">Đóng</button><button class="primary" disabled>Xác nhận nhập</button></div></footer>
+</div>
+<script>
+  const data = [
+    {id:1, doc:'Phiếu cân · phieu_can_04.jpg', meta:'Container: VSGU2240253 · Ngày đóng: 22/06/2026', sqt:'654', field:'Số tấn', note:'Quyết toán · Tháng 6, dòng 63', current:'28', next:'30'},
+    {id:2, doc:'Khoản chi · HĐ HD-99', meta:'Container: GAOU2620043 · Ngày chạy: 14/06/2026', sqt:'614', field:'Đơn giá', note:'Khoản chi · dòng 24', current:'100.000', next:'120.000'},
+    {id:3, doc:'Bill VSFHPG2218S05', meta:'Container: VSGU2240253 · File: 2218 LE PHAM 05(4).pdf', sqt:'654', field:'Loại hàng', note:'Quyết toán · Tháng 6, dòng 63', current:'Vôi rời', next:'Vôi'},
+    {id:4, doc:'Bill VSFHPG2218S05', meta:'Container: VSGU2240253 · File: 2218 LE PHAM 05(4).pdf', sqt:'654', field:'VT biển', note:'Quyết toán · Tháng 6, dòng 63', current:'Vietsun', next:'VIETSUN LINES'}
+  ];
+  const state = Object.fromEntries(data.map(item => [item.id,{selected:false,deferred:false,mode:'',custom:'',saved:false}]));
+  const esc = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  function message(text) { document.getElementById('message').textContent = text; }
+  function render() {
+    document.getElementById('rows').innerHTML = data.map(item => {
+      const s = state[item.id], visible = document.getElementById('filter').value === 'Tất cả' || document.getElementById('filter').value === item.field;
+      const status = s.deferred ? 'Xử lý sau' : s.saved ? 'Đã lưu' : s.mode ? 'Chưa lưu' : 'Chưa chọn';
+      return `<tr data-id="${item.id}" data-field="${esc(item.field)}" class="${s.deferred?'deferred':s.selected?'checked':''}" ${visible?'':'hidden'}><td class="check-cell"><input type="checkbox" aria-label="Chọn dòng ${item.id}" ${s.selected?'checked':''} onchange="selectRow(${item.id},this.checked)"></td><td><span class="doc-title">${esc(item.doc)}</span><span class="doc-sub">${esc(item.meta)}</span></td><td><span class="sqt-value">${esc(item.sqt)}</span></td><td><span class="field-name">${esc(item.field)}</span><span class="field-note">${esc(item.note)}</span></td><td><span class="value-caption">GIÁ TRỊ ĐANG CÓ</span><span class="value">${esc(item.current)}</span></td><td><span class="value-caption">GIÁ TRỊ TỪ CHỨNG TỪ</span><span class="value new-value">${esc(item.next)}</span></td><td><select class="row-select" aria-label="Cách xử lý dòng ${item.id}" ${s.deferred?'disabled':''} onchange="setMode(${item.id},this.value)"><option value="" ${!s.mode?'selected':''}>Chưa chọn</option><option value="current" ${s.mode==='current'?'selected':''}>Giữ số liệu đang có</option><option value="new" ${s.mode==='new'?'selected':''}>Dùng số liệu mới</option><option value="custom" ${s.mode==='custom'?'selected':''}>Nhập giá trị khác</option></select></td><td><input class="custom-input" aria-label="Giá trị khác dòng ${item.id}" placeholder="Nhập giá trị" value="${esc(s.custom)}" ${s.mode==='custom'&&!s.deferred?'':'disabled'} oninput="setCustom(${item.id},this.value)"></td><td><span class="status ${s.deferred?'deferred':s.saved?'done':''}">${status}</span></td></tr>`;
+    }).join('');
+    const visible = data.filter(item => document.getElementById('filter').value === 'Tất cả' || document.getElementById('filter').value === item.field).length;
+    document.getElementById('visible-count').textContent = `Đang hiện ${visible}/${data.length} dòng xung đột`;
+    document.getElementById('selected-count').textContent = `${data.filter(item => state[item.id].selected).length} dòng được chọn`;
+    document.getElementById('deferred-count').textContent = data.filter(item => state[item.id].deferred).length;
+  }
+  function selectRow(id, selected) { state[id].selected=selected; render(); }
+  function setMode(id, mode) { state[id].mode=mode; state[id].saved=false; render(); }
+  function setCustom(id, value) { state[id].custom=value; state[id].saved=false; }
+  function applyFilter() { render(); }
+  function fillVisible() { const mode=document.getElementById('rule').value; if(!mode) {message('Hãy chọn một cách xử lý trước khi điền.'); return;} let count=0; for(const item of data) if(!state[item.id].deferred && (document.getElementById('filter').value==='Tất cả'||document.getElementById('filter').value===item.field)) {state[item.id].mode=mode; state[item.id].saved=false; count++;} render(); message(`Đã điền cách xử lý cho ${count} dòng đang hiện.`); }
+  function deferRows() {let count=0; for(const item of data) if(state[item.id].selected&&!state[item.id].deferred) {state[item.id].deferred=true;count++;} render(); message(`Đã tô vàng ${count} dòng để xử lý sau.`);}
+  function undoRows() {let count=0; for(const item of data) if(state[item.id].selected&&state[item.id].deferred) {state[item.id].deferred=false;count++;} render(); message(`Đã hoàn tác ${count} dòng.`);}
+  function saveRows() {let count=0; for(const item of data) if(!state[item.id].deferred&&state[item.id].mode&&(state[item.id].mode!=='custom'||state[item.id].custom.trim())) {state[item.id].saved=true;count++;} render(); message(`Đã ghi nhận ${count} lựa chọn trong bản demo. File Excel chưa thay đổi.`);}
+  render();
+</script>
+</body>
+</html>

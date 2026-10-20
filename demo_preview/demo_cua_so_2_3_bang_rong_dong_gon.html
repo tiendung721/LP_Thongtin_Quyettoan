@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Demo cửa sổ 2 và 3 — bảng rộng, dòng gọn</title>
+  <style>
+    * { box-sizing: border-box; }
+    :root { font: 14px "Segoe UI", Arial, sans-serif; color: #173960; background: #f3f6fa; }
+    html, body { margin: 0; width: 100%; height: 100%; }
+    button, select, input { font: inherit; }
+    button { cursor: pointer; }
+    .window { height: 100vh; min-height: 620px; display: flex; flex-direction: column; padding: 7px 10px 8px; gap: 5px; }
+    .title { margin: 0; font-size: 25px; line-height: 1.2; font-weight: 700; color: #102541; }
+    .notice, .summary { flex: none; padding: 7px 11px; border-radius: 6px; }
+    .notice { background: #eaf3ff; color: #245a9d; }
+    .summary { background: #fff; border: 1px solid #dce5f0; color: #315170; }
+    .tabs { display: flex; align-items: end; flex: none; height: 36px; margin-top: 2px; }
+    .tab { height: 36px; padding: 0 16px; border: 0; border-right: 3px solid #f3f6fa; border-radius: 0; background: #e9eff7; color: #25466c; white-space: nowrap; }
+    .tab.active { background: #fff; color: #285db7; font-weight: 700; }
+    .tab.muted { cursor: default; }
+    .page { display: none; flex: 1; min-height: 0; flex-direction: column; background: #fff; border: 1px solid #dce5f0; padding: 12px 15px 8px; gap: 7px; }
+    .page.active { display: flex; }
+    h2 { font-size: 18px; font-weight: 700; color: #102541; line-height: 1.2; margin: 0; }
+    h3 { font-size: 16px; font-weight: 700; color: #102541; line-height: 1.2; margin: 0; }
+    .hint { color: #6481a0; margin: 0; line-height: 1.3; }
+    .toolbar { display: flex; align-items: center; flex: none; gap: 7px; min-height: 34px; }
+    .toolbar label { white-space: nowrap; }
+    select, input { border: 1px solid #bfd1e5; background: #fff; border-radius: 5px; color: #173960; height: 31px; padding: 3px 8px; min-width: 0; }
+    select:focus, input:focus { outline: 2px solid #9dc2f0; outline-offset: 1px; }
+    button.action { background: #fff; border: 1px solid #c6d5e6; border-radius: 5px; color: #315e96; height: 33px; padding: 0 11px; }
+    button.action.primary { background: #285db7; border-color: #285db7; color: #fff; font-weight: 700; }
+    button.action:disabled { opacity: .55; cursor: default; }
+    .table-wrap { min-height: 0; overflow: auto; border: 1px solid #dce5f0; border-radius: 5px; background: #fff; }
+    table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+    th { position: sticky; top: 0; z-index: 1; height: 36px; background: #eaf1f8; border-right: 1px solid #dce5ef; border-bottom: 1px solid #dce5ef; font-weight: 400; text-align: center; color: #224c78; padding: 4px 7px; }
+    td { height: 43px; padding: 5px 10px; border-right: 1px solid #e0e8f1; border-bottom: 1px solid #e0e8f1; font-weight: 400; line-height: 1.25; vertical-align: middle; overflow-wrap: anywhere; }
+    th:last-child, td:last-child { border-right: 0; }
+    tbody tr:nth-child(even) td { background: #fafcff; }
+    tbody tr.selected td { background: #edf4ff; }
+    tbody tr.deferred td { background: #fff1b8; }
+    tbody tr.clickable { cursor: pointer; }
+    tbody tr.clickable:hover td { background: #e6f0ff; }
+    tbody tr.deferred:hover td { background: #fff1b8; }
+    .cell-select, .cell-input { width: 100%; height: 30px; font-size: 13px; }
+    .cell-input:disabled { background: #f5f7fa; }
+    .new-value { color: #225bad; }
+    .top-list { flex: none; max-height: 166px; overflow: auto; }
+    .choice-focus { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 6px; }
+    .source-line { flex: none; padding: 7px 10px; background: #f5f9fe; border: 1px solid #dce5f0; border-radius: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .candidate-grid { flex: 1; }
+    .conflict-grid { flex: 1; }
+    .detail-focus { display: flex; flex-direction: column; flex: none; height: 186px; min-height: 0; gap: 5px; }
+    .detail-meta { flex: none; padding: 5px 9px; background: #f5f9fe; border: 1px solid #dce5f0; border-radius: 5px; overflow: hidden; line-height: 1.3; }
+    .detail-grid { flex: 1; }
+    .detail-grid td { height: 42px; }
+    .conflicts tr.active-detail td { background: #edf4ff; }
+    .actions { flex: none; display: flex; align-items: center; gap: 7px; min-height: 35px; }
+    .actions .count { color: #6d86a2; margin-right: 2px; }
+    .actions .save { margin-left: auto; }
+    .window-footer { flex: none; display: flex; align-items: center; gap: 7px; min-height: 36px; }
+    .window-footer .message { flex: 1; color: #718aa7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .window-footer .confirm { white-space: nowrap; }
+    .choice-list col:nth-child(1) { width: 19%; }
+    .choice-list col:nth-child(2) { width: 18%; }
+    .choice-list col:nth-child(3) { width: 10%; }
+    .choice-list col:nth-child(4) { width: 14%; }
+    .choice-list col:nth-child(5) { width: 29%; }
+    .choice-list col:nth-child(6) { width: 10%; }
+    .candidates col:nth-child(1) { width: 12%; }
+    .candidates col:nth-child(2) { width: 12%; }
+    .candidates col:nth-child(3) { width: 12%; }
+    .candidates col:nth-child(4) { width: 14%; }
+    .candidates col:nth-child(5) { width: 14%; }
+    .candidates col:nth-child(6) { width: 13%; }
+    .candidates col:nth-child(7) { width: 11%; }
+    .candidates col:nth-child(8) { width: 12%; }
+    .conflicts col:nth-child(1) { width: 18%; }
+    .conflicts col:nth-child(2) { width: 6%; }
+    .conflicts col:nth-child(3) { width: 11%; }
+    .conflicts col:nth-child(4) { width: 14%; }
+    .conflicts col:nth-child(5) { width: 14%; }
+    .conflicts col:nth-child(6) { width: 18%; }
+    .conflicts col:nth-child(7) { width: 11%; }
+    .conflicts col:nth-child(8) { width: 8%; }
+    .detail-grid col:nth-child(1) { width: 9%; }
+    .detail-grid col:nth-child(2) { width: 11%; }
+    .detail-grid col:nth-child(3) { width: 14%; }
+    .detail-grid col:nth-child(4) { width: 12%; }
+    .detail-grid col:nth-child(5) { width: 11%; }
+    .detail-grid col:nth-child(6) { width: 9%; }
+    .detail-grid col:nth-child(7) { width: 12%; }
+    .detail-grid col:nth-child(8) { width: 22%; }
+    @media (max-height: 780px) { .detail-focus { height: 155px; } }
+    @media (max-width: 1080px) {
+      .table-wrap { overflow-x: auto; }
+      .choice-list, .candidates, .conflicts { min-width: 1000px; }
+      .window-footer .message { display: none; }
+    }
+  </style>
+</head>
+<body>
+<div class="window">
+  <h1 class="title">Xử lý dữ liệu trước khi nhập</h1>
+  <div class="notice">Kiểm tra và chọn cách xử lý trước khi ghi file theo dõi. Bạn có thể lưu để tiếp tục sau.</div>
+  <div class="summary">Còn 3 việc cần quyết định&nbsp; · &nbsp;0 cần sửa thông tin&nbsp; · &nbsp;1 cần chọn Bill/số quyết toán&nbsp; · &nbsp;2 cần chọn số liệu&nbsp; · &nbsp;0 dòng để sau</div>
+  <nav class="tabs" aria-label="Các bước xử lý">
+    <button class="tab muted" type="button">1. Sửa thông tin (0)</button>
+    <button class="tab active" type="button" data-open="choice">2. Chọn Bill / số quyết toán (1)</button>
+    <button class="tab" type="button" data-open="conflict">3. Chọn số liệu (2)</button>
+    <button class="tab muted" type="button">4. Xem trước</button>
+  </nav>
+
+  <section class="page active" id="choice">
+    <h2>Chọn Bill hoặc dòng quyết toán cho từng chứng từ</h2>
+    <p class="hint">Chọn chứng từ ở bảng trên, rồi so sánh các phương án trong bảng lớn bên dưới.</p>
+    <div class="table-wrap top-list">
+      <table class="choice-list">
+        <colgroup><col><col><col><col><col><col></colgroup>
+        <thead><tr><th>Chứng từ</th><th>Vấn đề</th><th>Ngày</th><th>Container</th><th>Chọn kết quả phù hợp</th><th>Kết quả</th></tr></thead>
+        <tbody><tr class="selected" id="choice-issue">
+          <td>Bill VS26061210</td><td>A2 · Chọn số quyết toán</td><td>14/06/2026</td><td>GAOU2620043</td>
+          <td><select class="cell-select" id="candidate-choice" aria-label="Chọn số quyết toán"><option value="">Chọn cho dòng này...</option><option value="0">Dòng 1 · SQT 708</option><option value="1">Dòng 2 · SQT 0</option><option value="2">Dòng 3 · SQT 619</option></select></td>
+          <td id="choice-status">Chưa chọn</td>
+        </tr></tbody>
+      </table>
+    </div>
+    <div class="choice-focus">
+      <h3>So sánh các phương án — bấm vào dòng để chọn</h3>
+      <div class="source-line"><b>Bill VS26061210</b> · <b>File:</b> Bill_of_lading_PROSPER_2622S_VS26061210(4).pdf · <b>Container:</b> GAOU2620043 · <b>Ngày:</b> 14/06/2026</div>
+      <div class="table-wrap candidate-grid">
+        <table class="candidates">
+          <colgroup><col><col><col><col><col><col><col><col></colgroup>
+          <thead><tr><th>Phương án</th><th>Số quyết toán</th><th>Ngày đóng</th><th>Container</th><th>Nơi đóng</th><th>Loại hàng</th><th>Người nhận</th><th>Vị trí trong file</th></tr></thead>
+          <tbody>
+            <tr class="clickable" data-candidate="0"><td>Dòng 1</td><td>708</td><td>13/07/2026</td><td>GAOU2620043</td><td>Nam Đô</td><td>Vôi rời</td><td>DNA</td><td>Tháng 7, dòng 31</td></tr>
+            <tr class="clickable" data-candidate="1"><td>Dòng 2</td><td>0</td><td>—</td><td>GAOU2620043</td><td>—</td><td>Vôi rời</td><td>—</td><td>Tháng 7, dòng 82</td></tr>
+            <tr class="clickable" data-candidate="2"><td>Dòng 3</td><td>619</td><td>12/06/2026</td><td>GAOU2620043</td><td>Kỳ 219</td><td>Vôi rời</td><td>DNA</td><td>Tháng 6, dòng 28</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="actions"><button class="action" type="button" id="choice-defer">Xử lý sau</button><button class="action" type="button" id="choice-undo">Hoàn tác</button><button class="action primary save" type="button" id="choice-save">Lưu dữ liệu</button></div>
+  </section>
+
+  <section class="page" id="conflict">
+    <h2>Chọn số liệu sẽ dùng trong file theo dõi</h2>
+    <p class="hint">Đối chiếu số liệu cũ và mới, rồi chọn cách xử lý ngay trên từng dòng.</p>
+    <div class="toolbar">
+      <label for="field-filter">Xem trường:</label>
+      <select id="field-filter"><option>Tất cả</option><option>Loại hàng</option><option>VT biển</option><option>Số chì/Seal</option><option>Tên tàu</option></select>
+      <label for="bulk-rule">Cách xử lý cho các dòng đang hiện:</label>
+      <select id="bulk-rule"><option value="">Chọn cách xử lý</option><option value="old">Giữ số liệu đang có</option><option value="new">Dùng số liệu mới</option></select>
+      <button class="action" type="button" id="fill-rule">Điền vào bảng</button>
+    </div>
+    <div class="table-wrap conflict-grid">
+      <table class="conflicts">
+        <colgroup><col><col><col><col><col><col><col><col></colgroup>
+        <thead><tr><th>Chứng từ</th><th>SQT</th><th>Trường</th><th>File theo dõi</th><th>Chứng từ mới</th><th>Cách xử lý</th><th>Giá trị nhập</th><th>Kết quả</th></tr></thead>
+        <tbody>
+          <tr><td>Bill VSFHPG2218S05</td><td>654</td><td>Loại hàng</td><td>Vôi rời</td><td class="new-value">Vôi</td><td><select class="cell-select row-rule"><option value="">Chưa chọn</option><option value="old">Giữ số liệu đang có</option><option value="new">Dùng số liệu mới</option><option value="other">Nhập giá trị khác</option></select></td><td><input class="cell-input" disabled aria-label="Giá trị nhập dòng 1"></td><td class="result">Chưa chọn</td></tr>
+          <tr><td>Bill VSFHPG2218S05</td><td>654</td><td>VT biển</td><td>Vietsun</td><td class="new-value">VIETSUN LINES</td><td><select class="cell-select row-rule"><option value="">Chưa chọn</option><option value="old">Giữ số liệu đang có</option><option value="new">Dùng số liệu mới</option><option value="other">Nhập giá trị khác</option></select></td><td><input class="cell-input" disabled aria-label="Giá trị nhập dòng 2"></td><td class="result">Chưa chọn</td></tr>
+          <tr><td>Bill VS26061210</td><td>614</td><td>Số chì/Seal</td><td>đẹp tính giao LDA nhưng k dc</td><td class="new-value">29686520</td><td><select class="cell-select row-rule"><option value="">Chưa chọn</option><option value="old">Giữ số liệu đang có</option><option value="new">Dùng số liệu mới</option><option value="other">Nhập giá trị khác</option></select></td><td><input class="cell-input" disabled aria-label="Giá trị nhập dòng 3"></td><td class="result">Chưa chọn</td></tr>
+          <tr><td>Bill VS26061210</td><td>614</td><td>Loại hàng</td><td>Vôi rời</td><td class="new-value">Vôi</td><td><select class="cell-select row-rule"><option value="">Chưa chọn</option><option value="old">Giữ số liệu đang có</option><option value="new">Dùng số liệu mới</option><option value="other">Nhập giá trị khác</option></select></td><td><input class="cell-input" disabled aria-label="Giá trị nhập dòng 4"></td><td class="result">Chưa chọn</td></tr>
+          <tr><td>Bill VS26061210</td><td>614</td><td>Tên tàu</td><td>PROSPER 2622S</td><td class="new-value">PROSPER V.2622S</td><td><select class="cell-select row-rule"><option value="">Chưa chọn</option><option value="old">Giữ số liệu đang có</option><option value="new">Dùng số liệu mới</option><option value="other">Nhập giá trị khác</option></select></td><td><input class="cell-input" disabled aria-label="Giá trị nhập dòng 5"></td><td class="result">Chưa chọn</td></tr>
+          <tr><td>Bill VS26061210</td><td>614</td><td>VT biển</td><td>Vsico</td><td class="new-value">VSICO SHIPPING JOINT STOCK COMPANY</td><td><select class="cell-select row-rule"><option value="">Chưa chọn</option><option value="old">Giữ số liệu đang có</option><option value="new">Dùng số liệu mới</option><option value="other">Nhập giá trị khác</option></select></td><td><input class="cell-input" disabled aria-label="Giá trị nhập dòng 6"></td><td class="result">Chưa chọn</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="detail-focus">
+      <h3>Dòng đang có trong file theo dõi</h3>
+      <div class="detail-meta"><div id="detail-source">Chọn một dòng xung đột ở bảng trên để xem chứng từ và dòng đang có.</div><div id="detail-comparison"></div></div>
+      <div class="table-wrap detail-grid">
+        <table>
+          <colgroup><col><col><col><col><col><col><col><col></colgroup>
+          <thead><tr><th>Số quyết toán</th><th>Ngày đóng</th><th>Container</th><th>Số Bill</th><th>Số Seal</th><th>Số tấn</th><th>Nơi đóng</th><th>Vị trí trong file</th></tr></thead>
+          <tbody><tr id="detail-row"><td>654</td><td>22/06/2026</td><td>VSGU2240253</td><td>—</td><td>—</td><td>27,47</td><td>Thái Huy</td><td>Tháng 6, dòng 63</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="actions"><span class="count" id="field-count">Đang hiện 6/6 trường</span><button class="action" type="button" id="conflict-defer">Xử lý sau</button><button class="action" type="button" id="conflict-undo">Hoàn tác</button><button class="action primary save" type="button" id="conflict-save">Lưu dữ liệu</button></div>
+  </section>
+
+  <div class="window-footer"><span class="message">Chọn một nhóm để bắt đầu. Các mục có thể chuyển nhóm sau khi PM kiểm tra lại.</span><button class="action" type="button">Đóng</button><button class="action primary confirm" type="button">Xác nhận nhập vào file theo dõi</button></div>
+</div>
+<script>
+  const tabs = document.querySelectorAll('[data-open]');
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      tabs.forEach(function (item) { item.classList.toggle('active', item === tab); });
+      document.querySelectorAll('.page').forEach(function (page) { page.classList.toggle('active', page.id === tab.dataset.open); });
+    });
+  });
+  if (new URLSearchParams(location.search).get('tab') === 'conflict') document.querySelector('[data-open="conflict"]').click();
+  const candidateChoice = document.getElementById('candidate-choice');
+  const candidateRows = document.querySelectorAll('[data-candidate]');
+  function updateCandidate() {
+    candidateRows.forEach(function (row) { row.classList.toggle('selected', row.dataset.candidate === candidateChoice.value); });
+    document.getElementById('choice-status').textContent = candidateChoice.value === '' ? 'Chưa chọn' : 'Đã chọn';
+    document.getElementById('choice-issue').classList.remove('deferred');
+  }
+  candidateRows.forEach(function (row) { row.addEventListener('click', function () { candidateChoice.value = row.dataset.candidate; updateCandidate(); }); });
+  candidateChoice.addEventListener('change', updateCandidate);
+  document.getElementById('choice-defer').addEventListener('click', function () { document.getElementById('choice-issue').classList.add('deferred'); document.getElementById('choice-status').textContent = 'Xử lý sau'; });
+  document.getElementById('choice-undo').addEventListener('click', function () { document.getElementById('choice-issue').classList.remove('deferred'); updateCandidate(); });
+  document.getElementById('choice-save').addEventListener('click', function () { document.getElementById('choice-status').textContent = candidateChoice.value === '' ? 'Chưa chọn' : 'Đã lưu'; });
+  const conflictRows = document.querySelectorAll('.conflicts tbody tr');
+  function showConflictDetail(row) {
+    conflictRows.forEach(function (item) { item.classList.toggle('active-detail', item === row); });
+    const firstBill = Array.prototype.indexOf.call(conflictRows, row) < 2;
+    document.getElementById('detail-source').textContent = firstBill
+      ? 'Chứng từ đang xử lý: Bill · File: 2218 LE PHAM 05(4).pdf · Ngày đóng: chưa có · Container: VSGU2240253 · Số Seal: VS647513 · Số tấn: chưa có · Nơi đóng: chưa có'
+      : 'Chứng từ đang xử lý: Bill · File: Bill_of_lading_PROSPER_2622S_VS26061210(4).pdf · Ngày đóng: chưa có · Container: GAOU2620043 · Số Seal: 29686520 · Số tấn: chưa có · Nơi đóng: chưa có';
+    document.getElementById('detail-comparison').textContent =
+      'Đang so sánh: ' + row.cells[2].textContent +
+      ' · File theo dõi: ' + row.cells[3].textContent +
+      ' · Chứng từ mới: ' + row.cells[4].textContent;
+    const values = firstBill
+      ? ['654', '22/06/2026', 'VSGU2240253', '—', '—', '27,47', 'Thái Huy', 'Tháng 6, dòng 63']
+      : ['614', '14/06/2026', 'GAOU2620043', 'VS26061210', '29686520', '28', 'Nam Đô', 'Tháng 6, dòng 28'];
+    document.querySelectorAll('#detail-row td').forEach(function (cell, index) { cell.textContent = values[index]; });
+  }
+  conflictRows.forEach(function (row) {
+    const rule = row.querySelector('.row-rule');
+    const input = row.querySelector('.cell-input');
+    const result = row.querySelector('.result');
+    rule.addEventListener('change', function () { input.disabled = rule.value !== 'other'; result.textContent = rule.value ? 'Đã chọn' : 'Chưa chọn'; row.classList.remove('deferred'); });
+    row.addEventListener('click', function (event) { showConflictDetail(row); if (event.target.closest('select, input')) return; row.classList.toggle('selected'); });
+  });
+  showConflictDetail(conflictRows[0]);
+  document.getElementById('field-filter').addEventListener('change', function (event) {
+    let visible = 0;
+    conflictRows.forEach(function (row) { const show = event.target.value === 'Tất cả' || row.cells[2].textContent === event.target.value; row.hidden = !show; if (show) visible++; });
+    document.getElementById('field-count').textContent = 'Đang hiện ' + visible + '/6 trường';
+  });
+  document.getElementById('fill-rule').addEventListener('click', function () {
+    const value = document.getElementById('bulk-rule').value;
+    if (!value) return;
+    conflictRows.forEach(function (row) { if (!row.hidden) { row.querySelector('.row-rule').value = value; row.querySelector('.row-rule').dispatchEvent(new Event('change')); } });
+  });
+  document.getElementById('conflict-defer').addEventListener('click', function () { conflictRows.forEach(function (row) { if (row.classList.contains('selected')) { row.classList.add('deferred'); row.querySelector('.result').textContent = 'Xử lý sau'; } }); });
+  document.getElementById('conflict-undo').addEventListener('click', function () { conflictRows.forEach(function (row) { if (row.classList.contains('selected')) { row.classList.remove('deferred'); row.querySelector('.result').textContent = row.querySelector('.row-rule').value ? 'Đã chọn' : 'Chưa chọn'; } }); });
+  document.getElementById('conflict-save').addEventListener('click', function () { conflictRows.forEach(function (row) { if (row.querySelector('.row-rule').value && !row.classList.contains('deferred')) row.querySelector('.result').textContent = 'Đã lưu'; }); });
+</script>
+</body>
+</html>

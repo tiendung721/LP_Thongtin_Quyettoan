@@ -8,12 +8,12 @@ from datetime import date, datetime
 from typing import Any
 
 from openpyxl import load_workbook
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QTimer, Qt
 from PySide6.QtGui import QColor, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
-    QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
+    QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from .daily_import import (
@@ -33,13 +33,13 @@ CHOOSE_KINDS = {ISSUE_MULTIPLE_BILLS, ISSUE_MULTIPLE_TARGETS}
 STYLE = """
 QWidget { font-family: 'Segoe UI', Arial; font-size: 10pt; color: #1D304A; }
 QDialog { background: #F4F7FB; }
-QLabel#title { font-size: 18pt; font-weight: 700; color: #102541; }
+QLabel#title { font-size: 17pt; font-weight: 700; color: #102541; }
 QLabel#heading { font-size: 12pt; font-weight: 700; color: #102541; }
 QLabel#hint { color: #5E718B; }
-QLabel#summary { background: white; border: 1px solid #DCE5F0; border-radius: 7px; padding: 8px 10px; color: #315170; }
-QLabel#notice { background: #EAF3FF; color: #245A9D; padding: 9px; border-radius: 7px; }
-QLabel#detail { background: #F6F9FD; border: 1px solid #DCE5F0; border-radius: 7px; padding: 10px; }
-QPushButton { background: white; border: 1px solid #C6D3E2; border-radius: 7px; padding: 7px 12px; min-height: 23px; }
+QLabel#summary { background: white; border: 1px solid #DCE5F0; border-radius: 7px; padding: 5px 9px; color: #315170; }
+QLabel#notice { background: #EAF3FF; color: #245A9D; padding: 5px 8px; border-radius: 7px; }
+QLabel#detail { background: #F6F9FD; border: 1px solid #DCE5F0; border-radius: 7px; padding: 6px 8px; }
+QPushButton { background: white; border: 1px solid #C6D3E2; border-radius: 7px; padding: 5px 10px; min-height: 22px; }
 QPushButton:hover { background: #EDF3FB; }
 QPushButton:disabled { color: #98A7B8; background: #F2F4F7; }
 QPushButton[primary='true'] { color: white; background: #285DB7; border-color: #285DB7; font-weight: 700; }
@@ -50,8 +50,12 @@ QTableWidget::item:focus { outline: 2px solid #285DB7; }
 QTextBrowser { background: #F8FAFE; border: 1px solid #DCE5F0; border-radius: 7px; padding: 10px; }
 QHeaderView::section { background: #EDF2F8; padding: 8px; border: 0; border-right: 1px solid #DCE5F0; }
 QTabWidget::pane { border: 1px solid #DCE5F0; background: white; }
-QTabBar::tab { background: #E9EFF7; padding: 10px 16px; margin-right: 3px; }
+QTabBar::tab { background: #E9EFF7; padding: 7px 14px; margin-right: 3px; }
 QTabBar::tab:selected { background: white; color: #285DB7; font-weight: 700; }
+QTableWidget#conflictTable { background: #FFFFFF; alternate-background-color: #FAFCFF; gridline-color: #DFE8F2; selection-background-color: #EDF4FF; font-size: 10pt; }
+QTableWidget#conflictTable::item { padding: 4px 7px; }
+QTableWidget#conflictTable QHeaderView::section { background: #EAF1F8; color: #355675; font-size: 10pt; font-weight: 400; border-right: 1px solid #DCE5EF; border-bottom: 1px solid #DCE5EF; padding: 5px; }
+QComboBox#conflictRule, QLineEdit#conflictCustom { min-height: 29px; max-height: 29px; font-size: 10pt; }
 """
 
 
@@ -208,6 +212,8 @@ class GuidedImportResolutionDialog(ResizableDialog):
 
     def _build(self):
         outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 7, 10, 7)
+        outer.setSpacing(4)
         outer.addWidget(label("Xử lý dữ liệu trước khi nhập", "title"))
         outer.addWidget(label("Kiểm tra và chọn cách xử lý trước khi ghi file theo dõi. Bạn có thể lưu để tiếp tục sau.", "notice"))
         self.summary = label("", "summary")
@@ -232,7 +238,8 @@ class GuidedImportResolutionDialog(ResizableDialog):
     def _page(self, heading: str, hint: str):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(16, 16, 16, 14)
+        layout.setContentsMargins(12, 9, 12, 8)
+        layout.setSpacing(5)
         layout.addWidget(label(heading, "heading"))
         layout.addWidget(label(hint, "hint"))
         return page, layout
@@ -274,30 +281,24 @@ class GuidedImportResolutionDialog(ResizableDialog):
         self.choice_table = QTableWidget(0, 6)
         self.choice_table.setHorizontalHeaderLabels(["Chứng từ", "Vấn đề", "Ngày", "Container", "Chọn kết quả phù hợp", "Kết quả"])
         self.choice_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.choice_table.horizontalHeader().setStretchLastSection(True)
-        for col, width in enumerate((205, 220, 105, 140, 440)):
-            self.choice_table.setColumnWidth(col, width)
+        self.choice_table.horizontalHeader().setStretchLastSection(False)
+        self.choice_table.horizontalHeader().setFixedHeight(36)
         self.choice_table.verticalHeader().setVisible(False)
-        self.choice_table.verticalHeader().setDefaultSectionSize(48)
+        self.choice_table.verticalHeader().setDefaultSectionSize(42)
         self.choice_table.setAlternatingRowColors(True)
         self.choice_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.choice_table.setSelectionMode(QTableWidget.ExtendedSelection)
         self.choice_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        splitter = QSplitter(Qt.Vertical)
-        splitter.addWidget(self.choice_table)
-        detail_widget = QWidget()
-        detail_layout = QVBoxLayout(detail_widget)
+        self.choice_table.viewport().installEventFilter(self)
+        layout.addWidget(self.choice_table)
         self.choice_detail, self.choice_preview = self._add_detail_panel(
-            detail_layout, "So sánh các phương án — bấm vào dòng để chọn", large=True,
+            layout, "So sánh các phương án — bấm vào dòng để chọn", large=True,
         )
-        splitter.addWidget(detail_widget)
-        splitter.setStretchFactor(1, 2)
-        splitter.setSizes([240, 440])
-        layout.addWidget(splitter, 1)
+        self.choice_detail.setMaximumHeight(42)
+        self.choice_preview.horizontalHeader().setFixedHeight(36)
+        self.choice_preview.verticalHeader().setDefaultSectionSize(42)
         self.choice_table.itemSelectionChanged.connect(self.update_choice_context)
         self.choice_preview.cellClicked.connect(self.choose_from_preview)
-        self.choice_hint = label("Bill không được chọn sẽ bỏ qua trong lần nhập này và giữ PENDING để xử lý sau.", "notice")
-        layout.addWidget(self.choice_hint)
         actions = QHBoxLayout()
         self.choice_defer = button("Xử lý sau", lambda: self.defer_selected("choice"))
         self.choice_defer.setProperty("quiet", "true")
@@ -316,6 +317,7 @@ class GuidedImportResolutionDialog(ResizableDialog):
             "Xem số liệu đang có và số liệu mới cạnh nhau. Có thể đặt một cách xử lý cho các trường đang hiện, rồi sửa ngoại lệ ở từng dòng.",
         )
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(6)
         toolbar.addWidget(label("Xem trường:"))
         self.field_filter = QComboBox()
         self.field_filter.addItem("Tất cả")
@@ -333,27 +335,43 @@ class GuidedImportResolutionDialog(ResizableDialog):
         toolbar.addStretch()
         layout.addLayout(toolbar)
         self.diff_table = QTableWidget(0, 8)
-        self.diff_table.setHorizontalHeaderLabels(["Chứng từ", "SQT", "Trường", "File theo dõi", "Chứng từ mới", "Cách xử lý", "Giá trị khác (nếu nhập)", "Kết quả"])
+        self.diff_table.setObjectName("conflictTable")
+        self.diff_table.setHorizontalHeaderLabels(["Chứng từ", "SQT", "Trường", "File theo dõi", "Chứng từ mới", "Cách xử lý", "Giá trị nhập", "Kết quả"])
         self.diff_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.diff_table.horizontalHeader().setStretchLastSection(True)
-        for col, width in enumerate((215, 75, 125, 170, 170, 230, 155)):
-            self.diff_table.setColumnWidth(col, width)
+        self.diff_table.horizontalHeader().setStretchLastSection(False)
+        self.diff_table.horizontalHeader().setFixedHeight(36)
         self.diff_table.verticalHeader().setVisible(False)
-        self.diff_table.verticalHeader().setDefaultSectionSize(36)
+        self.diff_table.verticalHeader().setDefaultSectionSize(42)
+        self.diff_table.verticalHeader().setMinimumSectionSize(42)
         self.diff_table.setAlternatingRowColors(True)
+        self.diff_table.setWordWrap(True)
         self.diff_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.diff_table.setSelectionMode(QTableWidget.ExtendedSelection)
         self.diff_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        splitter = QSplitter(Qt.Vertical)
-        splitter.addWidget(self.diff_table)
-        detail_widget = QWidget()
-        detail_layout = QVBoxLayout(detail_widget)
-        self.diff_detail, self.diff_preview = self._add_detail_panel(detail_layout, "Dòng đang có trong file theo dõi", large=True)
-        splitter.addWidget(detail_widget)
-        splitter.setStretchFactor(0, 2)
-        splitter.setSizes([340, 300])
-        layout.addWidget(splitter, 1)
+        self.diff_table.viewport().installEventFilter(self)
+        layout.addWidget(self.diff_table, 1)
         self.diff_table.itemSelectionChanged.connect(self.update_diff_context)
+        detail_panel = QWidget()
+        detail_layout = QVBoxLayout(detail_panel)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(4)
+        detail_layout.addWidget(label("Dòng đang có trong file theo dõi", "heading"))
+        self.diff_detail = label("Chọn một dòng ở bảng trên để xem thông tin đối chiếu.", "detail")
+        self.diff_detail.setMaximumHeight(68)
+        detail_layout.addWidget(self.diff_detail)
+        self.diff_preview = QTableWidget(0, 0)
+        self.diff_preview.setMinimumHeight(78)
+        self.diff_preview.verticalHeader().setVisible(False)
+        self.diff_preview.verticalHeader().setDefaultSectionSize(42)
+        self.diff_preview.horizontalHeader().setFixedHeight(36)
+        self.diff_preview.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.diff_preview.setAlternatingRowColors(True)
+        self.diff_preview.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.diff_preview.setSelectionBehavior(QTableWidget.SelectRows)
+        detail_layout.addWidget(self.diff_preview, 1)
+        self.diff_detail_panel = detail_panel
+        detail_panel.setFixedHeight(185)
+        layout.addWidget(detail_panel)
         actions = QHBoxLayout()
         self.scope = label("", "hint")
         actions.addWidget(self.scope)
@@ -368,12 +386,66 @@ class GuidedImportResolutionDialog(ResizableDialog):
         layout.addLayout(actions)
         return page
 
+    def _size_diff_columns(self):
+        """Keep every conflict column visible while the table fills the dialog."""
+        if not hasattr(self, "diff_table"):
+            return
+        minimums = (170, 58, 105, 120, 120, 160, 110, 80)
+        weights = (18, 6, 11, 14, 14, 18, 11, 8)
+        available = max(self.diff_table.viewport().width() - 2, sum(minimums))
+        extra = available - sum(minimums)
+        widths = [base + extra * weight // 100 for base, weight in zip(minimums, weights)]
+        widths[-1] += available - sum(widths)
+        for column, width in enumerate(widths):
+            self.diff_table.setColumnWidth(column, width)
+
+    def _size_choice_columns(self):
+        if not hasattr(self, "choice_table"):
+            return
+        minimums = (160, 150, 95, 125, 250, 90)
+        weights = (21, 20, 8, 12, 29, 10)
+        available = max(self.choice_table.viewport().width() - 2, sum(minimums))
+        extra = available - sum(minimums)
+        widths = [base + extra * weight // 100 for base, weight in zip(minimums, weights)]
+        widths[-1] += available - sum(widths)
+        for column, width in enumerate(widths):
+            self.choice_table.setColumnWidth(column, width)
+
+    def _fit_choice_table(self):
+        # The issue list grows with its rows; the candidate comparison uses the rest.
+        rows = self.choice_table.rowCount()
+        self.choice_table.setFixedHeight(max(82, min(36 + rows * 42 + 4, 230)))
+
+    @staticmethod
+    def _centered_table_control(widget: QWidget) -> QWidget:
+        host = QWidget()
+        cell = QHBoxLayout(host)
+        cell.setContentsMargins(5, 4, 5, 4)
+        cell.addWidget(widget)
+        widget.setFixedHeight(30)
+        return host
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        if hasattr(self, "diff_detail_panel"):
+            self.diff_detail_panel.setFixedHeight(min(185, max(155, self.height() - 675)))
+        self._size_choice_columns()
+        self._size_diff_columns()
+
+    def eventFilter(self, watched, event):  # noqa: N802 - Qt API
+        if event.type() == QEvent.Resize:
+            if hasattr(self, "choice_table") and watched is self.choice_table.viewport():
+                self._size_choice_columns()
+            elif hasattr(self, "diff_table") and watched is self.diff_table.viewport():
+                self._size_diff_columns()
+        return super().eventFilter(watched, event)
+
     def _add_detail_panel(self, layout: QVBoxLayout, heading: str, *, large: bool = False) -> tuple[QLabel, QTableWidget]:
         layout.addWidget(label(heading, "heading"))
         details = label("Chọn một dòng trong bảng phía trên để xem dữ liệu.", "detail")
         layout.addWidget(details)
         preview = QTableWidget(0, 0)
-        preview.setMinimumHeight(220 if large else 150)
+        preview.setMinimumHeight(150)
         if not large:
             preview.setMaximumHeight(225)
         preview.verticalHeader().setVisible(False)
@@ -559,7 +631,13 @@ class GuidedImportResolutionDialog(ResizableDialog):
             self._set_preview(self.choice_preview, ["Phương án"], [])
             return
         issue = next(item for item in self.sandbox.analysis.issues if item.issue_id == self.choice_ids[index])
-        self.choice_detail.setText(self._source_summary(issue))
+        source = self.source_row(issue)
+        self.choice_detail.setText(
+            f"<b>{html.escape(self.source_label(issue))}</b>"
+            f"　·　<b>File:</b> {html.escape(str(source.get('file_nguon') or 'Chưa có'))}"
+            f"　·　<b>Container:</b> {html.escape(issue.container or 'Chưa có')}"
+            f"　·　<b>Ngày:</b> {html.escape(shown(issue.match_date) or 'Chưa có')}"
+        )
         selected_id = str(self.choice_boxes[index].currentData() or "")
         if issue.kind == ISSUE_MULTIPLE_BILLS:
             headers = ["Phương án", "Số Bill", "Ngày chạy", "Tên tàu", "VT biển", "Container", "File Bill"]
@@ -580,6 +658,8 @@ class GuidedImportResolutionDialog(ResizableDialog):
                              f"{candidate.sheet_name}, dòng {candidate.row_number}"])
         chosen = next((i for i, item in enumerate(issue.candidates) if item.candidate_id == selected_id), -1)
         self._set_preview(self.choice_preview, headers, rows, chosen)
+        self.choice_preview.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.choice_preview.verticalHeader().setDefaultSectionSize(42)
 
     def choose_from_preview(self, row: int, _column: int):
         issue_row = self.choice_table.currentRow()
@@ -595,27 +675,37 @@ class GuidedImportResolutionDialog(ResizableDialog):
         self.diff_undo.setEnabled(any(self._is_deferred(issue_id) for issue_id in selected_ids))
         index = self.diff_table.currentRow()
         if not 0 <= index < len(self.diff_rows):
-            self.diff_detail.setText("Chọn một trường phía trên để xem chứng từ và dòng đang có trong file theo dõi.")
+            self.diff_detail.setText("Chọn một dòng ở bảng trên để xem thông tin đối chiếu.")
             self._set_preview(self.diff_preview, ["Dòng file theo dõi"], [])
             return
         issue_id, conflict = self.diff_rows[index]
         issue = next(item for item in self.sandbox.analysis.issues if item.issue_id == issue_id)
-        self.diff_detail.setText(self._source_summary(issue) +
-                                 f"<br><b>Đang so sánh:</b> {html.escape(conflict.field_name)} · "
-                                 f"File theo dõi: {html.escape(shown(conflict.current_value))} · "
-                                 f"Chứng từ mới: {html.escape(shown(conflict.new_value))}")
+        source = self.source_row(issue)
+        day_key, day_label = self.effective_day_key(issue)
+        self.diff_detail.setText(
+            f"Chứng từ đang xử lý: {issue.doc_label} · File: {source.get('file_nguon') or 'Chưa có'} · "
+            f"{day_label}: {shown(source.get(day_key)) or 'Chưa có'} · Container: {issue.container or 'Chưa có'} · "
+            f"Số Seal: {shown(source.get('so_chi_seal')) or 'Chưa có'} · "
+            f"Số tấn: {shown(source.get('so_tan')) or 'Chưa có'} · "
+            f"Nơi đóng: {shown(source.get('noi_dong')) or 'Chưa có'}\n"
+            f"Đang so sánh: {conflict.field_name} · File theo dõi: {shown(conflict.current_value) or 'Chưa có'} · "
+            f"Chứng từ mới: {shown(conflict.new_value) or 'Chưa có'}"
+        )
+        self.diff_detail.setToolTip(self.diff_detail.text())
         values = self.sandbox.workbook_rows.get((conflict.target_sheet, conflict.target_row), {})
         if issue.doc_type == DOC_EXPENSE:
             headers = ["Số quyết toán", "Ngày tháng", "Container", "Số hóa đơn", "Nơi đóng", "Đơn giá", "Tổng tiền", "Vị trí trong file"]
             row = [values.get("SQT PM"), values.get("Ngày tháng"), values.get("Số Container"),
                    values.get("Số HĐ"), values.get("Nơi đóng"), values.get("Đơn giá"),
-                   values.get("Tổng tiền"), f"Bảng Khoản chi, dòng {conflict.target_row}"]
+                   values.get("Tổng tiền"), f"{conflict.target_sheet}, dòng {conflict.target_row}"]
         else:
             headers = ["Số quyết toán", "Ngày đóng", "Container", "Số Bill", "Số Seal", "Số tấn", "Nơi đóng", "Vị trí trong file"]
             row = [values.get("SQT PM"), values.get("Ngày Đóng"), values.get("Số Container"),
                    values.get("Số B/L"), values.get("Số chì/Seal"), values.get("Số tấn"),
                    values.get("Nơi đóng"), f"{conflict.target_sheet}, dòng {conflict.target_row}"]
         self._set_preview(self.diff_preview, headers, [row] if values else [])
+        self.diff_preview.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.diff_preview.verticalHeader().setDefaultSectionSize(42)
 
     @staticmethod
     def _set_status(table: QTableWidget, row: int, column: int, value: str):
@@ -812,6 +902,9 @@ class GuidedImportResolutionDialog(ResizableDialog):
         self.update_edit_actions()
         self.update_choice_actions()
         self.update_field_actions()
+        self._fit_choice_table()
+        self._size_choice_columns()
+        self._size_diff_columns()
         self.refresh_review()
 
     def _fill_edit_table(self):
@@ -851,7 +944,7 @@ class GuidedImportResolutionDialog(ResizableDialog):
             if index_in_box >= 0:
                 box.setCurrentIndex(index_in_box)
             box.currentIndexChanged.connect(lambda _value, row=index: self._choice_changed(row))
-            self.choice_table.setCellWidget(index, 4, box)
+            self.choice_table.setCellWidget(index, 4, self._centered_table_control(box))
             self.choice_boxes.append(box)
             self.choice_table.setItem(index, 5, read_only("Xử lý sau" if saved and saved.action == RESOLUTION_SKIP else "Đã chọn" if saved else "Chưa chọn"))
             box.setEnabled(not self._is_deferred(issue.issue_id))
@@ -883,13 +976,20 @@ class GuidedImportResolutionDialog(ResizableDialog):
             values = (self.source_label(issue), self._issue_sqt(issue, conflict), conflict.field_name,
                       shown(conflict.current_value), shown(conflict.new_value))
             for col, value in enumerate(values):
-                self.diff_table.setItem(row_index, col, read_only(value))
+                item = read_only(value)
+                item.setToolTip(str(value) if value not in (None, "") else "")
+                item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                if col == 4:
+                    item.setForeground(QColor("#225BAD"))
+                self.diff_table.setItem(row_index, col, item)
             box = QComboBox()
+            box.setObjectName("conflictRule")
             box.addItem("Chưa chọn", "")
             box.addItem("Giữ số liệu đang có", "CURRENT")
             box.addItem("Dùng số liệu mới", "NEW")
             box.addItem("Nhập giá trị khác", "CUSTOM")
             editor = QLineEdit()
+            editor.setObjectName("conflictCustom")
             saved = self.sandbox.analysis.resolutions.get(issue.issue_id)
             saved_choice = saved.field_choices.get(conflict.conflict_id, {}) if saved else {}
             mode, value = self.field_drafts.get(conflict.conflict_id, (str(saved_choice.get("mode") or ""), shown(saved_choice.get("value"))))
@@ -899,8 +999,8 @@ class GuidedImportResolutionDialog(ResizableDialog):
             box.currentIndexChanged.connect(lambda _index, target=editor, source=box: target.setEnabled(source.currentData() == "CUSTOM"))
             box.currentIndexChanged.connect(self.update_field_actions)
             editor.textChanged.connect(self.update_field_actions)
-            self.diff_table.setCellWidget(row_index, 5, box)
-            self.diff_table.setCellWidget(row_index, 6, editor)
+            self.diff_table.setCellWidget(row_index, 5, self._centered_table_control(box))
+            self.diff_table.setCellWidget(row_index, 6, self._centered_table_control(editor))
             self.diff_boxes.append(box)
             self.diff_inputs.append(editor)
             self.diff_table.setItem(row_index, 7, read_only("Xử lý sau" if saved and saved.action == RESOLUTION_SKIP else "Đã chọn" if saved else "Chưa chọn"))
@@ -910,6 +1010,10 @@ class GuidedImportResolutionDialog(ResizableDialog):
                 box.setStyleSheet("background: #FFF1B8; color: #785A00;")
                 editor.setStyleSheet("background: #FFF1B8;")
             self._paint_deferred(self.diff_table, row_index, self._is_deferred(issue.issue_id))
+            if row_index % 2 and not self._is_deferred(issue.issue_id):
+                for column in range(self.diff_table.columnCount()):
+                    if item := self.diff_table.item(row_index, column):
+                        item.setBackground(QColor("#FAFCFF"))
         old_field = self.field_filter.currentText()
         self.field_filter.blockSignals(True)
         self.field_filter.clear()
@@ -1109,6 +1213,10 @@ class GuidedImportResolutionDialog(ResizableDialog):
         self.feedback.setText(f"Đã hoàn tác xử lý sau cho {len(selected)} chứng từ.")
 
     def on_tab_change(self, index: int):
+        if index == 1:
+            QTimer.singleShot(0, self._size_choice_columns)
+        if index == 2:
+            QTimer.singleShot(0, self._size_diff_columns)
         if index == 3:
             self.refresh_review()
 

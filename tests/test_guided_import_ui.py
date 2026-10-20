@@ -17,7 +17,7 @@ from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
 from app.daily_import import (  # noqa: E402
     EXPENSE_HEADERS, EXPENSE_SHEET, INFO_HEADERS, DailyImportService,
-    FieldConflict, ImportIssue, InfoChange,
+    FieldConflict, ImportIssue, InfoChange, ISSUE_FIELD_CONFLICT,
 )
 from app.database import Database  # noqa: E402
 from app.guided_import_ui import GuidedImportResolutionDialog  # noqa: E402
@@ -101,6 +101,65 @@ class GuidedImportDialogTests(unittest.TestCase):
         self.assertFalse(self.dialog.saved_only)
         self.assertEqual(self.dialog.tabs.currentIndex(), 1)
         self.assertIn("chưa ghép", self.dialog.feedback.text())
+
+    def test_choice_tables_show_candidates_and_update_the_import_selection(self):
+        self.dialog.tabs.setCurrentIndex(1)
+        self.dialog.show()
+        self.app.processEvents()
+        self.assertTrue(self.dialog.choice_table.isVisible())
+        self.assertTrue(self.dialog.choice_preview.isVisible())
+        self.assertLessEqual(self.dialog.choice_table.height(), 100)
+        self.assertLessEqual(self.dialog.choice_table.rowHeight(0), 44)
+        self.assertGreater(self.dialog.choice_preview.height(), self.dialog.choice_table.height())
+        self.assertLessEqual(self.dialog.choice_preview.rowHeight(0), 44)
+        self.assertEqual(self.dialog.choice_table.horizontalScrollBar().maximum(), 0)
+        self.dialog.choice_table.selectRow(0)
+        self.dialog.choice_preview.cellClicked.emit(1, 0)
+        self.assertEqual(self.dialog.choice_boxes[0].currentData(),
+                         self.dialog.current_issues({"MULTIPLE_BILLS"})[0].candidates[1].candidate_id)
+        self.assertTrue(self.dialog.choice_apply.isEnabled())
+
+    def test_conflict_table_is_the_main_editing_area(self):
+        conflicts = [
+            FieldConflict("cargo-demo", 2, "Loại hàng", "Vôi rời", "Vôi", "Tháng 6"),
+            FieldConflict("carrier-demo", 2, "VT biển", "Vietsun", "VIETSUN LINES", "Tháng 6"),
+            FieldConflict("seal-demo", 2, "Số chì/Seal", "123", "456", "Tháng 6"),
+            FieldConflict("vessel-demo", 2, "Tên tàu", "Tàu A", "Tàu B", "Tháng 6"),
+            FieldConflict("port-demo", 2, "Nơi đóng", "Cảng A", "Cảng B", "Tháng 6"),
+            FieldConflict("weight-demo", 2, "Số tấn", 28, 30, "Tháng 6"),
+        ]
+        self.dialog.analysis.issues.append(ImportIssue(
+            issue_id="value-demo", kind=ISSUE_FIELD_CONFLICT, title="", reason="",
+            doc_type="BILL", container="MMNN1234567", match_date=None,
+            reference="Bill BL-A", json_indexes=[1], conflicts=conflicts,
+        ))
+        self.dialog.refresh_ui(capture=False)
+        self.dialog.tabs.setCurrentIndex(2)
+        self.dialog.show()
+        self.app.processEvents()
+        self.app.processEvents()
+        self.assertTrue(self.dialog.diff_table.isVisible())
+        self.assertEqual(self.dialog.diff_table.rowCount(), 6)
+        self.assertLessEqual(self.dialog.diff_table.rowHeight(0), 44)
+        self.assertGreaterEqual(self.dialog.diff_table.viewport().height(), 6 * self.dialog.diff_table.rowHeight(0))
+        self.assertEqual(self.dialog.diff_table.horizontalHeaderItem(1).text(), "SQT")
+        self.assertFalse(self.dialog.diff_table.item(0, 0).font().bold())
+        self.assertFalse(self.dialog.diff_table.item(0, 1).font().bold())
+        self.assertTrue(self.dialog.diff_preview.isVisible())
+        self.assertEqual(self.dialog.diff_preview.item(0, 0).text(), "250")
+        self.assertIn("Loại hàng", self.dialog.diff_detail.text())
+        self.dialog.diff_table.selectRow(1)
+        self.assertIn("VT biển", self.dialog.diff_detail.text())
+        self.dialog.resize(1100, 710)
+        self.app.processEvents()
+        self.assertGreater(self.dialog.diff_table.height(), self.dialog.diff_detail_panel.height())
+        self.assertEqual(self.dialog.diff_table.horizontalScrollBar().maximum(), 0)
+        self.dialog.diff_boxes[0].setCurrentIndex(self.dialog.diff_boxes[0].findData("NEW"))
+        self.assertEqual(self.dialog.diff_boxes[0].currentData(), "NEW")
+        self.dialog.diff_boxes[1].setCurrentIndex(self.dialog.diff_boxes[1].findData("CUSTOM"))
+        self.assertEqual(self.dialog.diff_boxes[1].currentData(), "CUSTOM")
+        self.dialog.diff_inputs[1].setText("Viet Sun")
+        self.assertEqual(self.dialog.diff_inputs[1].text(), "Viet Sun")
 
     def test_save_for_later_keeps_workbook_unchanged_and_pending_rows(self):
         before = self.daily.read_bytes()

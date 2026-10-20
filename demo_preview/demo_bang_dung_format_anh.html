@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Demo bảng xử lý theo bố cục gốc</title>
+  <style>
+    * { box-sizing: border-box; }
+    :root { font-family: "Segoe UI", Arial, sans-serif; color: #173960; background: #f3f5f8; }
+    body { margin: 0; }
+    button, select, input { font: inherit; }
+    button { cursor: pointer; }
+    .dialog { height: 100vh; min-height: 530px; display: flex; flex-direction: column; padding: 0 8px 8px; }
+    .tabs { display: flex; height: 25px; flex: none; align-items: stretch; }
+    .tab { border-right: 2px solid #fff; padding: 4px 12px; background: #e9eff6; color: #3c5878; font-size: 11px; white-space: nowrap; }
+    .tab.active { background: #fff; color: #235fbd; font-weight: 700; }
+    .page { min-height: 0; flex: 1; display: flex; flex-direction: column; background: #fff; border: 1px solid #dce5f0; padding: 14px 20px 8px; }
+    h1 { margin: 0 0 5px; font-size: 16px; color: #142f50; }
+    .hint { margin: 0; color: #5f7d9e; font-size: 12px; }
+    .toolbar { display: flex; align-items: center; gap: 7px; min-height: 40px; margin: 5px 0 7px; }
+    .toolbar label { font-size: 12px; white-space: nowrap; }
+    .toolbar .two-line { line-height: 1.1; white-space: normal; }
+    select, input { border: 1px solid #c3d3e6; background: #fff; color: #20436c; border-radius: 3px; height: 31px; padding: 3px 7px; font-size: 13px; }
+    select:focus, input:focus { outline: 2px solid #8cb6eb; outline-offset: 1px; }
+    #field-filter { width: 105px; }
+    #bulk-rule { width: 180px; }
+    button { border: 1px solid #c9d9ec; background: #fff; color: #315e96; border-radius: 4px; padding: 6px 10px; min-height: 31px; font-size: 12px; }
+    button:hover { background: #edf4fc; }
+    button.primary { background: #2865bd; color: #fff; border-color: #2865bd; font-weight: 700; }
+    button:disabled { opacity: .5; cursor: default; }
+    .grid { flex: 1; min-height: 0; overflow: auto; border: 1px solid #d4dfeb; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    col.check { width: 3%; } col.document { width: 18%; } col.sqt { width: 6%; } col.field { width: 11%; } col.old { width: 13%; } col.fresh { width: 13%; } col.rule { width: 17%; } col.custom { width: 11%; } col.result { width: 8%; }
+    th { position: sticky; top: 0; z-index: 1; background: #eaf1f8; border-right: 1px solid #dce5ef; border-bottom: 1px solid #dce5ef; height: 36px; color: #355675; font-size: 12px; font-weight: 600; text-align: center; padding: 4px; }
+    th:last-child, td:last-child { border-right: 0; }
+    td { height: 68px; border-right: 1px solid #e0e8f1; border-bottom: 1px solid #e0e8f1; padding: 7px 8px; font-size: 14px; vertical-align: middle; }
+    tbody tr:nth-child(even) td { background: #fafcff; }
+    tbody tr.selected td { background: #edf4ff; }
+    tbody tr.deferred td { background: #fff1b8; }
+    td.check { text-align: center; padding: 0; }
+    input[type=checkbox] { width: 16px; height: 16px; accent-color: #2865bd; }
+    .doc, .field, .value { font-weight: 600; }
+    .doc { overflow-wrap: anywhere; }
+    .sqt { font-weight: 700; }
+    .value { font-size: 16px; }
+    .new-value { color: #225bad; }
+    .row-rule, .custom-value { width: 100%; height: 34px; }
+    .custom-value:disabled { background: #f5f7fa; }
+    .status { font-size: 12px; white-space: nowrap; }
+    .footer { min-height: 35px; display: flex; align-items: center; gap: 8px; padding-top: 6px; }
+    .footer .scope { font-size: 12px; color: #6884a4; }
+    .footer .save { margin-left: auto; }
+    @media(max-width: 1050px) { .grid { overflow-x: auto; } table { min-width: 1020px; } }
+  </style>
+</head>
+<body>
+<div class="dialog">
+  <nav class="tabs"><span class="tab">1. Sửa thông tin (2)</span><span class="tab">2. Chọn Bill / số quyết toán (3)</span><span class="tab active">3. Chọn số liệu (2)</span><span class="tab">4. Xem trước</span></nav>
+  <main class="page"><h1>Chọn số liệu sẽ dùng trong file theo dõi</h1><p class="hint">Xem số liệu đang có và số liệu mới cạnh nhau. Có thể đặt một cách xử lý cho các trường đang hiện, rồi sửa ngoại lệ ở từng dòng.</p>
+    <div class="toolbar"><label for="field-filter">Xem trường:</label><select id="field-filter" onchange="render()"><option>Tất cả</option><option>Số tấn</option><option>Đơn giá</option></select><label class="two-line" for="bulk-rule">Cách xử lý cho các<br>dòng đang hiện:</label><select id="bulk-rule"><option value="">Chọn cách xử lý</option><option value="CURRENT">Giữ số liệu đang có</option><option value="NEW">Dùng số liệu mới</option></select><button onclick="fillVisible()">Điền vào bảng</button></div>
+    <div class="grid"><table><colgroup><col class="check"><col class="document"><col class="sqt"><col class="field"><col class="old"><col class="fresh"><col class="rule"><col class="custom"><col class="result"></colgroup><thead><tr><th></th><th>Chứng từ</th><th>SQT</th><th>Trường</th><th>File theo dõi</th><th>Chứng từ mới</th><th>Cách xử lý</th><th>Giá trị nhập</th><th>Kết quả</th></tr></thead><tbody id="rows"></tbody></table></div>
+    <div class="footer"><span class="scope" id="scope">Đang hiện 2/2 trường</span><button onclick="deferSelected()">Để chứng từ đang chọn xử lý sau</button><button onclick="undoSelected()">Hoàn tác</button><button class="primary save" onclick="save()">Lưu dữ liệu</button></div>
+  </main>
+</div>
+<script>
+  const data=[
+    {id:1,document:'Phiếu cân · phieu_can_04.jpg',sqt:'654',field:'Số tấn',old:'28',fresh:'30'},
+    {id:2,document:'Khoản chi · HĐ HD-99',sqt:'614',field:'Đơn giá',old:'100.000',fresh:'120.000'}
+  ];
+  const state=Object.fromEntries(data.map(row=>[row.id,{selected:false,deferred:false,mode:'',custom:'',saved:false}]));
+  const esc=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  function render(){const filter=document.getElementById('field-filter').value;const visible=data.filter(row=>filter==='Tất cả'||row.field===filter);document.getElementById('scope').textContent=`Đang hiện ${visible.length}/${data.length} trường`;document.getElementById('rows').innerHTML=visible.map(row=>{const s=state[row.id];const status=s.deferred?'Xử lý sau':s.saved?'Đã lưu':s.mode?'Chưa lưu':'Chưa chọn';return `<tr class="${s.deferred?'deferred':s.selected?'selected':''}"><td class="check"><input type="checkbox" aria-label="Chọn dòng ${row.id}" ${s.selected?'checked':''} onchange="state[${row.id}].selected=this.checked;render()"></td><td class="doc">${esc(row.document)}</td><td class="sqt">${esc(row.sqt)}</td><td class="field">${esc(row.field)}</td><td class="value">${esc(row.old)}</td><td class="value new-value">${esc(row.fresh)}</td><td><select class="row-rule" aria-label="Cách xử lý dòng ${row.id}" ${s.deferred?'disabled':''} onchange="state[${row.id}].mode=this.value;state[${row.id}].saved=false;render()"><option value="" ${!s.mode?'selected':''}>Chưa chọn</option><option value="CURRENT" ${s.mode==='CURRENT'?'selected':''}>Giữ số liệu đang có</option><option value="NEW" ${s.mode==='NEW'?'selected':''}>Dùng số liệu mới</option><option value="CUSTOM" ${s.mode==='CUSTOM'?'selected':''}>Nhập giá trị khác</option></select></td><td><input class="custom-value" aria-label="Giá trị nhập dòng ${row.id}" value="${esc(s.custom)}" ${s.mode==='CUSTOM'&&!s.deferred?'':'disabled'} oninput="state[${row.id}].custom=this.value;state[${row.id}].saved=false"></td><td class="status">${status}</td></tr>`}).join('');}
+  function fillVisible(){const mode=document.getElementById('bulk-rule').value;if(!mode)return;const filter=document.getElementById('field-filter').value;for(const row of data)if(!state[row.id].deferred&&(filter==='Tất cả'||row.field===filter)){state[row.id].mode=mode;state[row.id].saved=false;}render();}
+  function deferSelected(){for(const row of data)if(state[row.id].selected)state[row.id].deferred=true;render();}
+  function undoSelected(){for(const row of data)if(state[row.id].selected)state[row.id].deferred=false;render();}
+  function save(){for(const row of data)if(!state[row.id].deferred&&state[row.id].mode&&(state[row.id].mode!=='CUSTOM'||state[row.id].custom.trim()))state[row.id].saved=true;render();}
+  render();
+</script>
+</body>
+</html>
