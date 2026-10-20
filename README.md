@@ -14,6 +14,14 @@ Luồng gồm 4 bước, mỗi bước có một thao tác chính:
 4. **Nhập dữ liệu mới lên phần mềm quyết toán** — chạy file `.bat` khởi động luồng
    **PAD RPA**.
 
+Ở Bước 3, nút **Xem lượt nhập gần nhất** mở bảng các giá trị Excel đã xét trong
+lần cập nhật gần nhất, gồm ô đích, giá trị trước/sau và kết quả. Ở Bước 4, nút
+**Xem dữ liệu gửi PAD gần nhất** mở ảnh chụp các SQT và dòng Excel đã chọn trong
+lần khởi chạy tác vụ nhập thông tin hoặc khoản chi gần nhất. Các bảng này được
+lưu trong SQLite để xem lại sau khi mở lại app. Lịch sử Bước 4 chỉ xác nhận đã
+khởi chạy PAD; không xác nhận PAD nhập thành công. Các lượt Bước 3 được ghi từ
+phiên bản cũ chỉ có số liệu tổng hợp, chưa có bảng chi tiết.
+
 File JSON bóc tách là **bộ nhớ tạm của một lô chứng từ**: nó nằm trực tiếp trong
 `output`, là bản bạn xem/sửa ở Bước 2 và là bản Bước 3 đọc trực tiếp. Lô mới thay
 thế file tạm cũ. Những dòng đã chọn **Để xử lý sau** được phần mềm lưu riêng,

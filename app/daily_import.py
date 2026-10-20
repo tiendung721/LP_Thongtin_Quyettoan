@@ -1600,6 +1600,18 @@ class DailyImportService:
         run_id = self.database.create_import_run(
             analysis.processed_file_id, analysis.output_path, daily_path
         )
+        details: List[Dict[str, Any]] = []
+        if analysis.skipped_json_indexes:
+            skipped = set(analysis.skipped_json_indexes)
+            for row in self._read_output(analysis.output_path):
+                if row.json_index in skipped:
+                    details.append({
+                        "container": row.container, "sqt": "", "bill": row.bill_no,
+                        "field": DOC_LABELS.get(row.doc_type, row.doc_type),
+                        "source": row.source_name or f"Dòng {row.source_row}",
+                        "sheet": "", "cell": "", "before": "", "after": "",
+                        "result": "Để xử lý sau",
+                    })
         if not analysis.has_changes:
             previous_deferred: Optional[Dict[str, Any]] = None
             saved_deferred_id: Optional[int] = None
@@ -1640,7 +1652,9 @@ class DailyImportService:
                     status=status,
                     wrote_workbook=False,
                 )
-                self.database.finish_import_run(run_id, "COMPLETED", summary=summary.to_dict())
+                self.database.finish_import_run(
+                    run_id, "COMPLETED", summary=summary.to_dict(), details=details
+                )
                 if analysis.processed_file_id is not None:
                     self.database.update_status(
                         analysis.processed_file_id, status, note=self._summary_note(summary)
@@ -1707,6 +1721,7 @@ class DailyImportService:
                     if name not in info_map:
                         continue
                     cell = info_ws.cell(row_number, info_map[name])
+                    before = cell.value
                     conflict = conflict_by_field.get(name)
                     if conflict:
                         if conflict_decisions.get(conflict.conflict_id, False):
@@ -1716,6 +1731,23 @@ class DailyImportService:
                         "Ngày cập nhật",
                     ):
                         cell.value = value
+                    if name not in INFO_TECHNICAL_HEADERS and (value not in (None, "") or before not in (None, "")):
+                        details.append({
+                            "container": change.values.get("Số Container") or "",
+                            "sqt": change.sqt,
+                            "bill": change.values.get("Số B/L") or "",
+                            "field": name,
+                            "source": value,
+                            "sheet": sheet_name,
+                            "cell": cell.coordinate,
+                            "before": before,
+                            "after": cell.value,
+                            "result": (
+                                "Đã thêm" if change.action == "CREATE"
+                                else "Đã cập nhật" if before != cell.value
+                                else "Giữ nguyên"
+                            ),
+                        })
 
             for change in analysis.expense_changes:
                 row_number = (
@@ -1734,6 +1766,7 @@ class DailyImportService:
                     if name not in expense_map:
                         continue
                     cell = expense_ws.cell(row_number, expense_map[name])
+                    before = cell.value
                     conflict = conflict_by_field.get(name)
                     if conflict:
                         if conflict_decisions.get(conflict.conflict_id, False):
@@ -1744,8 +1777,39 @@ class DailyImportService:
                         "Ngày cập nhật",
                     ):
                         cell.value = value
+                    if name not in {"MD5", "Trạng thái nhập", "Ngày cập nhật", "Ngày nhập cuối"} and (value not in (None, "") or before not in (None, "")):
+                        details.append({
+                            "container": change.values.get("Số Container") or "",
+                            "sqt": change.values.get("SQT PM") or "",
+                            "bill": "",
+                            "field": name,
+                            "source": value,
+                            "sheet": EXPENSE_SHEET,
+                            "cell": cell.coordinate,
+                            "before": before,
+                            "after": cell.value,
+                            "result": (
+                                "Đã thêm" if change.action == "CREATE"
+                                else "Đã cập nhật" if before != cell.value
+                                else "Giữ nguyên"
+                            ),
+                        })
 
             self._sync_expense_places(wb, expense_ws)
+            # Lưu đúng giá trị cuối cùng của workbook, kể cả các cột được đồng bộ
+            # sau vòng ghi từng ô (ví dụ Nơi đóng ở sheet khoản chi).
+            for detail in details:
+                sheet_name = detail.get("sheet")
+                coordinate = detail.get("cell")
+                if not sheet_name or not coordinate:
+                    continue
+                final_value = wb[sheet_name][coordinate].value
+                detail["after"] = final_value
+                detail["result"] = (
+                    "Đã thêm" if detail["result"] == "Đã thêm"
+                    else "Đã cập nhật" if detail["before"] != final_value
+                    else "Giữ nguyên"
+                )
             self._format_workbook(wb)
             suffix = Path(daily_path).suffix or ".xlsx"
             temp_path = str(Path(daily_path).with_name(f".__daily_import_{os.getpid()}{suffix}"))
@@ -1787,7 +1851,8 @@ class DailyImportService:
                 status=status,
             )
             self.database.finish_import_run(
-                run_id, "COMPLETED", backup_path=backup_path, summary=summary.to_dict()
+                run_id, "COMPLETED", backup_path=backup_path,
+                summary=summary.to_dict(), details=details,
             )
             if analysis.processed_file_id is not None:
                 self.database.update_status(

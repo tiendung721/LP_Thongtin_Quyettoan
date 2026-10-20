@@ -59,6 +59,7 @@ from .guided_import_ui import GuidedImportResolutionDialog as ImportResolutionDi
 from .database import Database
 from .dialogs.base_dialog import enable_standard_window_controls
 from .dialogs.notifications import NotificationMetric, notify
+from .dialogs.latest_import_dialogs import LatestDailyImportDialog, LatestRpaLaunchDialog
 from .dialogs.select_sqt_dialog import SelectSqtDialog
 from .services.assistant_browser import (
     AssistantBrowserError,
@@ -78,6 +79,7 @@ from .services.sqt_selection_service import (
     SELECTION_OPERATION,
     SqtSelectionError,
     read_sqt_items,
+    read_selection_snapshot,
     resolve_selection_sheet,
     write_selection_json,
 )
@@ -600,6 +602,10 @@ class MainWindow(QMainWindow):
             "Còn dòng cần xử lý", self.on_open_deferred, action=True
         )
         body3.addWidget(self.btn_deferred, alignment=Qt.AlignLeft)
+        self.btn_latest_daily = self._make_button(
+            "Xem lượt nhập gần nhất", self.on_show_latest_daily
+        )
+        body3.addWidget(self.btn_latest_daily, alignment=Qt.AlignLeft)
         v.addWidget(self.card_step3)
 
         # --- Bước 4: nhập lên phần mềm quyết toán bằng RPA ---
@@ -644,6 +650,10 @@ class MainWindow(QMainWindow):
             action=True,
         )
         body4.addLayout(self._action_row(self.btn_input_expense, self.lbl_input_expense_path))
+        self.btn_latest_rpa = self._make_button(
+            "Xem dữ liệu gửi PAD gần nhất", self.on_show_latest_rpa
+        )
+        body4.addWidget(self.btn_latest_rpa, alignment=Qt.AlignLeft)
         v.addWidget(self.card_step4)
 
         v.addStretch(1)
@@ -1034,6 +1044,30 @@ class MainWindow(QMainWindow):
             for c, val in enumerate(values):
                 self.table_history.setItem(r, c, QTableWidgetItem(val))
         self.table_history.resizeColumnsToContents()
+
+    def on_show_latest_daily(self) -> None:
+        try:
+            run = self.database.get_latest_import_run()
+        except Exception:  # noqa: BLE001
+            self.logger.exception("Không đọc được lượt nhập Bước 3 gần nhất.")
+            self.show_error("Không mở được lịch sử", "Không đọc được lượt nhập Bước 3 gần nhất.")
+            return
+        if run is None:
+            self.show_info("Chưa có lịch sử", "Chưa có lượt cập nhật bảng theo dõi nào.")
+            return
+        LatestDailyImportDialog(run, self).exec()
+
+    def on_show_latest_rpa(self) -> None:
+        try:
+            run = self.database.get_latest_rpa_launch_run()
+        except Exception:  # noqa: BLE001
+            self.logger.exception("Không đọc được dữ liệu gửi PAD gần nhất.")
+            self.show_error("Không mở được lịch sử", "Không đọc được dữ liệu gửi PAD gần nhất.")
+            return
+        if run is None:
+            self.show_info("Chưa có lịch sử", "Chưa có lượt nhập thông tin hoặc khoản chi nào được gửi cho PAD.")
+            return
+        LatestRpaLaunchDialog(run, self).exec()
 
     def _update_record_status(
         self,
@@ -1972,9 +2006,7 @@ class MainWindow(QMainWindow):
                 "Vui lòng chọn ít nhất một Số quyết toán.",
             )
             return
-        selected_items = (
-            dialog.selected_items() if operation == SELECTION_OPERATION else None
-        )
+        selected_items = dialog.selected_items()
 
         # File theo tháng có nhiều sheet "Tháng N"; luồng PAD chỉ mở đúng một sheet
         # mỗi lần chạy, nên ghi đúng tên sheet tháng vào JSON và chặn khi các SQT
@@ -1994,6 +2026,16 @@ class MainWindow(QMainWindow):
                 + ").\n\nLuồng RPA nhập thông tin xử lý mỗi lần một tháng. Vui lòng "
                 "chỉ chọn các Số quyết toán trong cùng một tháng rồi chạy lại.",
             )
+            return
+
+        try:
+            snapshot = read_selection_snapshot(daily_path, effective_sheet_name, selected_items)
+            if not snapshot:
+                raise SqtSelectionError(
+                    "Không còn dòng Excel nào khớp với SQT đã chọn. Hãy mở lại danh sách SQT."
+                )
+        except SqtSelectionError as exc:
+            self.show_warning("Dữ liệu Excel đã thay đổi", str(exc))
             return
 
         try:
@@ -2028,6 +2070,16 @@ class MainWindow(QMainWindow):
             return
 
         self.logger.info("Đã gọi BAT %s: %s", action_label, bat_path)
+        try:
+            self.database.create_rpa_launch_run(
+                operation, daily_path, effective_sheet_name, selected_sqt, snapshot
+            )
+        except Exception:  # noqa: BLE001
+            self.logger.exception("Đã gọi PAD nhưng không lưu được ảnh chụp lượt gửi.")
+            self.show_warning(
+                "Không lưu được lịch sử",
+                "PAD đã được khởi chạy, nhưng không lưu được dữ liệu của lượt gửi này.",
+            )
         self._mark_rpa_launched(launched_message)
 
     def on_input_information(self) -> None:

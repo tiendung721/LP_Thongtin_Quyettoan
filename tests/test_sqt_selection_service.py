@@ -5,9 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from app.daily_import import EXPENSE_SHEET, INFO_SHEET
+from app.database import Database
 from app.services.sqt_selection_service import (
     EmptySqtListError,
     EXPENSE_SELECTION_OPERATION,
@@ -17,6 +18,7 @@ from app.services.sqt_selection_service import (
     is_imported_status,
     normalize_sqt_value,
     read_sqt_items,
+    read_selection_snapshot,
     resolve_selection_sheet,
     write_selection_json,
 )
@@ -61,6 +63,25 @@ class SqtSelectionServiceTests(unittest.TestCase):
         self.assertEqual(normalize_sqt_value("596.0"), "596")
         self.assertEqual(normalize_sqt_value(""), "")
         self.assertEqual(normalize_sqt_value(None), "")
+
+    def test_pad_snapshot_preserves_selected_excel_rows(self) -> None:
+        self._make_daily([596, 596, 597])
+        selected = [read_sqt_items(str(self.daily))[0]]
+        snapshot = read_selection_snapshot(str(self.daily), INFO_SHEET, selected)
+        self.assertEqual([row["row_number"] for row in snapshot], [2, 3])
+        self.assertEqual([row["values"]["Số Container"] for row in snapshot], ["CONT01", "CONT02"])
+
+        database = Database(str(self.root / "history.db"))
+        database.init_db()
+        database.create_rpa_launch_run("NHAP_THONG_TIN", str(self.daily), INFO_SHEET, ["596"], snapshot)
+        workbook = load_workbook(self.daily)
+        workbook[INFO_SHEET]["B2"] = "CHANGED"
+        workbook.save(self.daily)
+        workbook.close()
+
+        last = database.get_latest_rpa_launch_run()
+        self.assertEqual(last["selected_sqt"], ["596"])
+        self.assertEqual(last["snapshot"][0]["values"]["Số Container"], "CONT01")
 
     def test_imported_status_accepts_supported_values(self) -> None:
         self.assertTrue(is_imported_status("Đã nhập"))

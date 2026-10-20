@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS daily_import_runs (
     backup_path TEXT,
     status TEXT NOT NULL,
     summary_json TEXT,
+    detail_json TEXT,
     error_message TEXT,
     created_at TEXT NOT NULL,
     completed_at TEXT
@@ -95,6 +96,16 @@ CREATE TABLE IF NOT EXISTS deferred_batches (
     row_count INTEGER NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS rpa_launch_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation TEXT NOT NULL,
+    daily_path TEXT NOT NULL,
+    sheet_name TEXT NOT NULL,
+    selected_sqt_json TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_staged_rows_state ON staged_rows(state);
@@ -134,6 +145,11 @@ class Database:
                     "ALTER TABLE processed_files ADD COLUMN output_path TEXT"
                 )
             conn.executescript(_CREATE_DAILY_IMPORT_TABLES_SQL)
+            import_cols = {
+                row["name"] for row in conn.execute("PRAGMA table_info(daily_import_runs)")
+            }
+            if "detail_json" not in import_cols:
+                conn.execute("ALTER TABLE daily_import_runs ADD COLUMN detail_json TEXT")
             deferred_cols = {
                 row["name"] for row in conn.execute("PRAGMA table_info(deferred_batches)")
             }
@@ -516,13 +532,14 @@ class Database:
         *,
         backup_path: Optional[str] = None,
         summary: Optional[Dict[str, Any]] = None,
+        details: Optional[List[Dict[str, Any]]] = None,
         error_message: Optional[str] = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE daily_import_runs
-                SET status = ?, backup_path = ?, summary_json = ?,
+                SET status = ?, backup_path = ?, summary_json = ?, detail_json = ?,
                     error_message = ?, completed_at = ?
                 WHERE id = ?
                 """,
@@ -530,12 +547,55 @@ class Database:
                     status,
                     backup_path,
                     json.dumps(summary or {}, ensure_ascii=False),
+                    json.dumps(details, ensure_ascii=False, default=str) if details is not None else None,
                     error_message,
                     _now(),
                     run_id,
                 ),
             )
             conn.commit()
+
+    def get_latest_import_run(self) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM daily_import_runs WHERE status != 'RUNNING' "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["summary"] = json.loads(result.pop("summary_json") or "{}")
+        raw_details = result.pop("detail_json")
+        result["details"] = json.loads(raw_details) if raw_details is not None else None
+        return result
+
+    def create_rpa_launch_run(
+        self, operation: str, daily_path: str, sheet_name: str,
+        selected_sqt: List[str], snapshot: List[Dict[str, Any]],
+    ) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO rpa_launch_runs "
+                "(operation, daily_path, sheet_name, selected_sqt_json, snapshot_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (operation, daily_path, sheet_name,
+                 json.dumps(selected_sqt, ensure_ascii=False),
+                 json.dumps(snapshot, ensure_ascii=False, default=str), _now()),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def get_latest_rpa_launch_run(self) -> Optional[Dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM rpa_launch_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["selected_sqt"] = json.loads(result.pop("selected_sqt_json"))
+        result["snapshot"] = json.loads(result.pop("snapshot_json"))
+        return result
 
     # ------------------------------------------------------------------ #
     # Bản nháp lựa chọn trong cửa sổ xử lý Bước 3

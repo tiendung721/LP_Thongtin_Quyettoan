@@ -322,6 +322,61 @@ def resolve_selection_sheet(
     return sheets[0] if sheets else default_sheet
 
 
+def read_selection_snapshot(
+    daily_file: str,
+    sheet_name: str,
+    selected_items: Iterable[SqtSelectionItem],
+) -> list[dict[str, Any]]:
+    """Freeze the Excel rows selected for a PAD launch before PAD can edit them."""
+    items = list(selected_items)
+    selected = {item.value for item in items}
+    selected_rows = {
+        row_number for item in items for row_number in item.row_numbers
+        if not item.sheet_name or item.sheet_name == sheet_name
+    } if sheet_name != EXPENSE_SHEET else set()
+    try:
+        workbook = load_workbook(daily_file, read_only=True, data_only=True)
+        try:
+            if sheet_name not in workbook.sheetnames:
+                raise MissingSheetError(f"Không tìm thấy sheet “{sheet_name}”.")
+            sheet = workbook[sheet_name]
+            headers = _header_map(sheet)
+            sqt_col = headers.get(SQT_COLUMN)
+            if sqt_col is None:
+                raise MissingColumnError(f"Không tìm thấy cột “{SQT_COLUMN}”.")
+            snapshot = []
+            for row_number, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+                if selected_rows and row_number not in selected_rows:
+                    continue
+                sqt = normalize_sqt_value(_cell(row, sqt_col))
+                if sqt not in selected:
+                    continue
+                values = {
+                    name: _cell(row, column)
+                    for name, column in headers.items()
+                    if name not in {"MD5", "Ngày cập nhật"}
+                }
+                snapshot.append({
+                    "sheet_name": sheet_name,
+                    "row_number": row_number,
+                    "sqt": sqt,
+                    "values": values,
+                })
+            found = {item["sqt"] for item in snapshot}
+            found_rows = {item["row_number"] for item in snapshot}
+            if found != selected or (selected_rows and found_rows != selected_rows):
+                raise SqtSelectionError(
+                    "Một số SQT đã chọn không còn ở đúng dòng Excel. Hãy mở lại danh sách SQT."
+                )
+            return snapshot
+        finally:
+            workbook.close()
+    except SqtSelectionError:
+        raise
+    except (InvalidFileException, OSError, ValueError) as exc:
+        raise SqtSelectionError(f"Không đọc được dữ liệu đã chọn trong Excel: {exc}") from exc
+
+
 def write_selection_json(
     target_path: str | os.PathLike[str],
     daily_file: str,

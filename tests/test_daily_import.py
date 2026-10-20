@@ -257,6 +257,28 @@ class DailyImportServiceTests(unittest.TestCase):
         self.assertEqual(again.expense_changes[0].action, "UPDATE")
         self.assertEqual(again.duplicate_documents, 0)
 
+    def test_latest_import_keeps_cell_results_after_excel_changes(self) -> None:
+        self._make_output()
+        self.service.commit(self.service.analyze(str(self.output), str(self.daily), 1))
+
+        run = self.db.get_latest_import_run()
+        self.assertIsNotNone(run)
+        self.assertEqual(run["status"], "COMPLETED")
+        self.assertTrue(run["details"])
+        place = next(
+            item for item in run["details"]
+            if item["sheet"] == EXPENSE_SHEET and item["field"] == "Nơi đóng"
+        )
+        self.assertEqual(place["after"], "Kho B")
+        self.assertEqual(place["result"], "Đã thêm")
+
+        workbook = load_workbook(self.daily)
+        headers = {cell.value: cell.column for cell in workbook[EXPENSE_SHEET][1]}
+        workbook[EXPENSE_SHEET].cell(2, headers["Nơi đóng"]).value = "Đã sửa sau đó"
+        workbook.save(self.daily)
+        workbook.close()
+        self.assertEqual(self.db.get_latest_import_run()["details"], run["details"])
+
     def test_reimport_is_allowed_while_rows_remain_in_daily(self) -> None:
         """Dòng đã hoàn tất vẫn được phân tích lại để cập nhật Excel."""
         self._make_output()
@@ -273,6 +295,9 @@ class DailyImportServiceTests(unittest.TestCase):
         summary = self.service.commit(again)
         self.assertEqual(summary.updated_info, 1)
         self.assertEqual(summary.updated_expenses, 1)
+        self.assertTrue(
+            any(item["result"] == "Giữ nguyên" for item in self.db.get_latest_import_run()["details"])
+        )
 
         # Nếu người dùng xóa dòng khỏi Excel thì lần tiếp theo sẽ tạo lại dòng.
         wb = load_workbook(self.daily)
@@ -773,6 +798,7 @@ class DailyImportServiceTests(unittest.TestCase):
         )
         summary = self.service.commit(skipped)
         self.assertEqual(summary.status, "DAILY_IMPORT_PARTIAL")
+        self.assertEqual(self.db.get_latest_import_run()["details"][0]["result"], "Để xử lý sau")
         self.assertEqual(self._expense_sqt_column(), [])
         with open(self.output, encoding="utf-8") as f:
             self.assertEqual(len(json.load(f)["du_lieu_boc_tach"]), 1)
