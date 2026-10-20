@@ -328,6 +328,10 @@ def read_selection_snapshot(
     selected_items: Iterable[SqtSelectionItem],
 ) -> list[dict[str, Any]]:
     """Freeze the Excel rows selected for a PAD launch before PAD can edit them."""
+    if file_utils.is_file_locked(daily_file):
+        raise DailyFileLockedError(
+            "File Excel đang được sử dụng hoặc có file khóa cần kiểm tra."
+        )
     items = list(selected_items)
     selected = {item.value for item in items}
     selected_rows = {

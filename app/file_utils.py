@@ -37,6 +37,11 @@ def is_file_locked(path: str) -> bool:
     if not os.path.exists(path):
         raise FileNotFoundError(path)
 
+    if os.path.splitext(path)[1].lower() in {".xlsx", ".xlsm", ".xlsb", ".xls"}:
+        from .excel_lock import AVAILABLE, inspect_excel_lock
+
+        return inspect_excel_lock(path).status != AVAILABLE
+
     # Dấu hiệu file Excel đang mở: tồn tại file tạm ~$tenfile
     if os.path.exists(excel_temp_file_path(path)):
         return True

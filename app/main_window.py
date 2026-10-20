@@ -48,6 +48,10 @@ from PySide6.QtWidgets import (
 )
 
 from . import file_utils
+from .excel_lock import (
+    AVAILABLE, IN_USE, MISSING, POSSIBLE_STALE, UNKNOWN,
+    ExcelLockState, inspect_excel_lock, recover_stale_lock,
+)
 from .config import AppConfig
 from .daily_import import EXPENSE_SHEET, INFO_SHEET, DailyImportError, ImportAnalysis, ImportSummary
 from .daily_import import DailyImportService
@@ -160,6 +164,13 @@ class MainWindow(QMainWindow):
         self._daily_worker_result = None
         self._daily_worker_error: Optional[str] = None
         self._daily_worker_callback = None
+        self._lock_thread: Optional[QThread] = None
+        self._lock_worker: Optional[FunctionWorker] = None
+        self._lock_result = None
+        self._lock_error: Optional[str] = None
+        self._lock_operation = ""
+        self._lock_checked_path = ""
+        self._last_lock_state: Optional[ExcelLockState] = None
         self._rpa_cooldown = False
         self._select_sqt_dialog_open = False
         self._active_deferred_batch_id: Optional[int] = None
@@ -191,6 +202,7 @@ class MainWindow(QMainWindow):
         self._saved_timer.setInterval(2000)
         self._saved_timer.timeout.connect(self._refresh_saved_label)
         self._saved_timer.start()
+        QTimer.singleShot(0, self._start_excel_lock_check)
 
     # ================================================================== #
     # Dựng giao diện
@@ -598,6 +610,22 @@ class MainWindow(QMainWindow):
             action=True,
         )
         body3.addLayout(self._action_row(self.btn_import_daily, self.lbl_daily_path))
+        self.lbl_excel_lock = QLabel("Đang kiểm tra trạng thái file Excel...")
+        self.lbl_excel_lock.setObjectName("hintText")
+        self.lbl_excel_lock.setWordWrap(True)
+        body3.addWidget(self.lbl_excel_lock)
+        lock_row = QHBoxLayout()
+        self.btn_check_excel_lock = self._make_button(
+            "Kiểm tra khóa Excel", self._start_excel_lock_check
+        )
+        self.btn_recover_excel_lock = self._make_button(
+            "Khôi phục file khóa", self.on_recover_excel_lock
+        )
+        self.btn_recover_excel_lock.setVisible(False)
+        lock_row.addWidget(self.btn_check_excel_lock)
+        lock_row.addWidget(self.btn_recover_excel_lock)
+        lock_row.addStretch(1)
+        body3.addLayout(lock_row)
         self.btn_deferred = self._make_button(
             "Còn dòng cần xử lý", self.on_open_deferred, action=True
         )
@@ -910,6 +938,105 @@ class MainWindow(QMainWindow):
     def show_warning(self, title: str, message: str) -> None:
         notify.warning(self, title, message)
 
+    def _start_excel_lock_check(self) -> None:
+        self._start_excel_lock_worker("check")
+
+    def _start_excel_lock_worker(self, operation: str) -> None:
+        if self._lock_thread is not None:
+            return
+        path = self.config.daily_tracking_file
+        self._lock_checked_path = path
+        self._lock_operation = operation
+        self._lock_result = None
+        self._lock_error = None
+        self.lbl_excel_lock.setText("Đang kiểm tra file Excel trên LAN...")
+        self.btn_check_excel_lock.setEnabled(False)
+        self.btn_recover_excel_lock.setVisible(False)
+        self._lock_thread = QThread(self)
+        function = (
+            (lambda: recover_stale_lock(path)) if operation == "recover"
+            else (lambda: inspect_excel_lock(path))
+        )
+        self._lock_worker = FunctionWorker(function)
+        self._lock_worker.moveToThread(self._lock_thread)
+        self._lock_thread.started.connect(self._lock_worker.run)
+        self._lock_worker.finished.connect(self._store_excel_lock_result)
+        self._lock_worker.failed.connect(self._store_excel_lock_error)
+        self._lock_worker.finished.connect(self._lock_thread.quit)
+        self._lock_worker.failed.connect(self._lock_thread.quit)
+        self._lock_thread.finished.connect(self._finish_excel_lock_worker)
+        self._lock_thread.start()
+
+    def _store_excel_lock_result(self, result) -> None:
+        self._lock_result = result
+
+    def _store_excel_lock_error(self, message: str) -> None:
+        self._lock_error = message
+
+    def _finish_excel_lock_worker(self) -> None:
+        thread, worker = self._lock_thread, self._lock_worker
+        operation, path = self._lock_operation, self._lock_checked_path
+        result, error = self._lock_result, self._lock_error
+        self._lock_thread = None
+        self._lock_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        if thread is not None:
+            thread.deleteLater()
+        self.btn_check_excel_lock.setEnabled(True)
+        if path != self.config.daily_tracking_file:
+            self._start_excel_lock_check()
+            return
+        if error:
+            self._last_lock_state = None
+            self.lbl_excel_lock.setText("Không kiểm tra hoặc khôi phục được file khóa Excel.")
+            self.logger.warning("Kiểm tra/khôi phục khóa Excel thất bại: %s", error)
+            if operation == "recover":
+                self.show_warning("Chưa khôi phục file khóa", error)
+            else:
+                self.btn_recover_excel_lock.setVisible(False)
+            return
+        if operation == "recover":
+            self.logger.info("Đã đổi tên file khóa Excel để lưu giữ: %s", result)
+            self.show_info("Đã khôi phục file khóa", f"File khóa cũ đã được lưu giữ tại:\n{result}")
+            self._start_excel_lock_check()
+            return
+        state: ExcelLockState = result
+        self._last_lock_state = state
+        if state.status == AVAILABLE:
+            message = "File Excel sẵn sàng."
+        elif state.status == POSSIBLE_STALE:
+            message = "Phát hiện file khóa có thể bị sót lại. Kiểm tra trước khi khôi phục."
+        elif state.status == IN_USE:
+            message = "File Excel đang được sử dụng. Hãy lưu và đóng Excel trước khi tiếp tục."
+        elif state.status == MISSING:
+            message = "Không tìm thấy file Excel được cấu hình."
+        else:
+            message = state.reason or "Không xác định được trạng thái file Excel trên LAN."
+        self.lbl_excel_lock.setText(message)
+        self.btn_recover_excel_lock.setVisible(state.status == POSSIBLE_STALE)
+
+    def on_recover_excel_lock(self) -> None:
+        if self._lock_thread is not None or self._daily_import_running:
+            return
+        path = self.config.daily_tracking_file
+        state = self._last_lock_state
+        if state is None or state.status != POSSIBLE_STALE or path != self._lock_checked_path:
+            self._start_excel_lock_check()
+            return
+        if not notify.confirm(
+            self,
+            "Khôi phục file khóa Excel",
+            "File khóa sau có thể đã bị sót lại:\n"
+            f"{state.lock_path}\n\n"
+            "Phần mềm sẽ kiểm tra lại rồi đổi tên file này để lưu giữ. "
+            "Hãy bảo đảm không có ai đang mở file Excel trên LAN.",
+            confirm_text="Kiểm tra và đổi tên",
+            cancel_text="Hủy",
+        ):
+            return
+        self._start_excel_lock_worker("recover")
+
     def set_overall_status(self, status: str, message: str) -> None:
         self.overall_status = status
         self.lbl_overall_status.setText(message)
@@ -930,6 +1057,9 @@ class MainWindow(QMainWindow):
             has_file
             and bool(daily_path and os.path.isfile(daily_path))
             and not self._daily_import_running
+        )
+        self.btn_recover_excel_lock.setEnabled(
+            not self._daily_import_running and self._lock_thread is None
         )
         self._refresh_deferred_button()
         # Bước 4 luôn dùng được (trừ vài giây chống bấm trùng); nếu chưa cấu
@@ -1211,6 +1341,7 @@ class MainWindow(QMainWindow):
 
             self._update_button_states()
             self.show_info("Lưu cấu hình", "Đã lưu cấu hình thành công.")
+            self._start_excel_lock_check()
         except Exception as exc:  # noqa: BLE001
             self.logger.exception("Lỗi khi lưu cấu hình.")
             self.show_error("Lỗi lưu cấu hình", f"Chi tiết: {exc}")
@@ -1469,7 +1600,12 @@ class MainWindow(QMainWindow):
             self.show_warning("Chưa có file theo dõi", "Hãy chọn file theo dõi hàng ngày trong Cài đặt.")
             return
         if file_utils.is_file_locked(daily_path):
-            self.show_warning("File theo dõi đang mở", "Hãy lưu và đóng Excel rồi thử lại.")
+            self._start_excel_lock_check()
+            self.show_warning(
+                "Chưa thể đọc file theo dõi",
+                "File Excel đang được sử dụng hoặc có file khóa cần kiểm tra. "
+                "Xem mục kiểm tra khóa Excel ở Bước 3.",
+            )
             return
 
         batch = batches[0]
@@ -1681,10 +1817,11 @@ class MainWindow(QMainWindow):
 
         try:
             if file_utils.is_file_locked(daily_path):
+                self._start_excel_lock_check()
                 self.show_warning(
-                    "File theo dõi đang mở",
-                    "File theo dõi hàng ngày đang mở trong Excel. Hãy lưu và đóng "
-                    "file rồi bấm lại.",
+                    "Chưa thể đọc file theo dõi",
+                    "File Excel đang được sử dụng hoặc có file khóa cần kiểm tra. "
+                    "Xem mục kiểm tra khóa Excel ở Bước 3.",
                 )
                 return
         except FileNotFoundError:
@@ -1970,6 +2107,7 @@ class MainWindow(QMainWindow):
             )
             return
         except DailyFileLockedError as exc:
+            self._start_excel_lock_check()
             self.logger.error("File Excel hằng ngày đang bị khóa: %s", daily_path)
             self.show_warning("File Excel đang bị khóa", str(exc))
             return
@@ -2179,6 +2317,12 @@ class MainWindow(QMainWindow):
     # Đóng cửa sổ
     # ================================================================== #
     def closeEvent(self, event) -> None:  # noqa: N802 - override Qt
+        if self._lock_thread is not None and self._lock_thread.isRunning():
+            self._lock_thread.quit()
+            if not self._lock_thread.wait(5000):
+                event.ignore()
+                self.show_warning("Đang kiểm tra file Excel", "Vui lòng chờ kiểm tra hoàn tất rồi đóng ứng dụng.")
+                return
         self._saved_timer.stop()
         if self._daily_thread is not None and self._daily_thread.isRunning():
             self._daily_thread.quit()

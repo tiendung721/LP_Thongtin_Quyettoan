@@ -1819,6 +1819,11 @@ class DailyImportService:
             # Lưu các dòng gác lại trước khi thay file theo dõi. Dữ liệu này sống
             # độc lập với JSON tạm, nên lô mới không thể làm mất hàng chờ cũ.
             saved_deferred_id = self._save_deferred_from_analysis(analysis)
+            if file_utils.is_file_locked(daily_path):
+                raise DailyImportError(
+                    "File Excel đã được mở hoặc có file khóa mới trước khi ghi. "
+                    "Vui lòng kiểm tra lại rồi nhập lại."
+                )
             os.replace(temp_path, daily_path)
             workbook_replaced = True
 

@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
+from . import file_utils
 from .daily_import import (
     DOC_EXPENSE, EXPENSE_SHEET, DailyImportError, ImportAnalysis,
     ISSUE_FIELD_CONFLICT, ISSUE_MISSING_CLOSE_DATE, ISSUE_MULTIPLE_BILLS,
@@ -126,6 +127,10 @@ class LiveImportSession:
     @staticmethod
     def _read_workbook_rows(path: str) -> dict[tuple[str, int], dict[str, Any]]:
         result = {}
+        if file_utils.is_file_locked(path):
+            raise DailyImportError(
+                "File Excel đang được sử dụng hoặc có file khóa cần kiểm tra."
+            )
         try:
             book = load_workbook(path, read_only=True, data_only=True)
             try:

@@ -221,6 +221,10 @@ File `.exe` sẽ nằm trong thư mục `dist\QuyetToanAssistant\`.
   tự xóa file này khi có lô mới thay thế, hoặc khi lô hiện tại đã nhập xong sạch lỗi.
 - Dữ liệu đã nhập nằm ở **file theo dõi hàng ngày (Excel)** — phần mềm không bao giờ
   xóa file này.
+- Khi khởi động, Bước 3 kiểm tra khóa của đúng file Excel trong cấu hình. Nếu báo
+  **file khóa có thể bị sót**, hãy xác nhận không ai đang mở Excel trên LAN rồi bấm
+  **Khôi phục file khóa**. Phần mềm kiểm tra lại và đổi tên file `~$` để lưu giữ;
+  nếu trạng thái không rõ hoặc file đang được dùng, phần mềm giữ nguyên file khóa.
 - Dùng giờ local của Windows (không dùng UTC).
 - Có thể tắt/mở lại app bất kỳ lúc nào; phần mềm tự nhận lại file bóc tách đang
   dùng, hoặc file mới nhất trong thư mục `output`.

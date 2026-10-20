@@ -30,6 +30,22 @@ MAX_SAVE_ATTEMPTS = 3
 SAVE_RETRY_SECONDS = 1
 
 
+def _require_excel_available(destination: Path) -> None:
+    # PAD starts this file as a standalone script, outside the app package path.
+    root = str(Path(__file__).resolve().parents[1])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from app.excel_lock import AVAILABLE, inspect_excel_lock
+
+    state = inspect_excel_lock(str(destination))
+    if state.status != AVAILABLE:
+        raise ExcelHelperError(
+            ExitCode.FILE_LOCKED_OR_SAVE_FAILED,
+            "FILE_LOCKED",
+            state.reason or "Không xác định được trạng thái file Excel.",
+        )
+
+
 class ExitCode(IntEnum):
     SUCCESS = 0
     UNKNOWN_ERROR = 1
@@ -229,6 +245,7 @@ def atomic_save_workbook(workbook, destination: Path, logger: logging.Logger) ->
             ) from save_error
 
         workbook.close()
+        _require_excel_available(destination)
         replace_error: Exception | None = None
         for attempt in range(1, MAX_SAVE_ATTEMPTS + 1):
             try:
@@ -271,6 +288,8 @@ def update_information_status(
             "FILE_NOT_FOUND",
             f"Không tìm thấy file Excel: {destination}",
         )
+
+    _require_excel_available(destination)
 
     workbook = None
     saved = False
