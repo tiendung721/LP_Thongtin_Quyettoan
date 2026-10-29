@@ -53,7 +53,7 @@ from .excel_lock import (
     ExcelLockState, inspect_excel_lock, recover_stale_lock,
 )
 from .config import AppConfig
-from .daily_import import EXPENSE_SHEET, INFO_SHEET, DailyImportError, ImportAnalysis, ImportSummary
+from .daily_import import EXPENSE_SHEET, INFO_SHEET, DailyImportError, ImportAnalysis, ImportSummary, load_extract_payload
 from .daily_import import DailyImportService
 from .daily_import_ui import (
     FunctionWorker,
@@ -65,6 +65,8 @@ from .dialogs.base_dialog import enable_standard_window_controls
 from .dialogs.notifications import NotificationMetric, notify
 from .dialogs.latest_import_dialogs import LatestDailyImportDialog, LatestRpaLaunchDialog
 from .dialogs.select_sqt_dialog import SelectSqtDialog
+from .dialogs.revenue_dialog import RevenueDialog
+from .revenue import RevenueStore, is_revenue_row
 from .services.assistant_browser import (
     AssistantBrowserError,
     output_is_from_session,
@@ -102,6 +104,7 @@ STATUS_LABELS = {
     "DAILY_IMPORTED": "Đã cập nhật bảng theo dõi",
     "DAILY_IMPORT_ERROR": "Lỗi cập nhật bảng theo dõi",
     "RPA_LAUNCHED": "Đã mở tác vụ nhập quyết toán",
+    "REVENUE_STAGED": "Doanh thu chờ kiểm tra ở Bước 4",
     # Các trạng thái cũ (giữ để hiển thị lại lịch sử từ phiên bản trước).
     "REVIEW_CONFIRMED": "Đã xác nhận dùng file này",
     "READY_TO_PREVIEW": "Sẵn sàng duyệt dữ liệu",
@@ -149,10 +152,13 @@ class MainWindow(QMainWindow):
         self.config = config
         self.database = database
         self.logger = logger
+        self.revenue_store = RevenueStore(database.db_path)
+        self.revenue_store.init_db()
 
         # Trạng thái vận hành.
         self.overall_status: str = "WAITING_FOR_DOWNLOAD"
         self.current_working_file: Optional[Dict[str, Any]] = None
+        self._current_regular_count = 0
         self.daily_import_service = DailyImportService(
             self.database,
             self.logger,
@@ -194,6 +200,7 @@ class MainWindow(QMainWindow):
         self.watcher.signals.log_message.connect(self.append_log)
 
         self._load_last_record()
+        self._restore_revenue_from_current_file()
         self._start_watcher()
 
         # Người dùng bấm Lưu trong JSON editor nên soi lại thời điểm lưu của file
@@ -447,7 +454,7 @@ class MainWindow(QMainWindow):
             self._set_step(1, "Bắt đầu tại đây", "active")
 
         # Bước 2 — file bóc tách
-        if not has_file:
+        if not has_file or self._current_regular_count == 0:
             self._set_step(2, "Chờ chứng từ mới", "wait")
         elif is_error:
             self._set_step(2, "Lỗi", "error")
@@ -455,7 +462,7 @@ class MainWindow(QMainWindow):
             self._set_step(2, "Sẵn sàng kiểm tra", "done")
 
         # Bước 3 — nhập lên file hàng ngày
-        if not has_file:
+        if not has_file or self._current_regular_count == 0:
             self._set_step(3, "Chờ chứng từ", "wait")
         elif not has_daily:
             self._set_step(3, "Thiếu file theo dõi", "warn")
@@ -477,6 +484,8 @@ class MainWindow(QMainWindow):
         # Viền nổi bước đang cần thao tác
         if not has_file:
             active = 1
+        elif self._current_regular_count == 0:
+            active = 4
         elif not imported:
             active = 3
         elif not self._rpa_launched_at:
@@ -497,9 +506,10 @@ class MainWindow(QMainWindow):
         # Dòng hint Bước 3: chỉ đặt khi chưa có file hoặc sẵn-sàng-chưa-nhập
         # (không đè khi đang chạy hoặc đã có kết quả nhập).
         if not self._daily_import_running:
-            if not has_file:
+            if not has_file or self._current_regular_count == 0:
                 self.lbl_daily_status.setText(
-                    "Chờ chứng từ từ trợ lý rồi mới cập nhật được."
+                    "Doanh thu được kiểm tra tại Bước 4; Bước 3 chỉ dùng cho chứng từ cũ."
+                    if has_file else "Chờ chứng từ từ trợ lý rồi mới cập nhật được."
                 )
             elif not has_daily:
                 self.lbl_daily_status.setText(
@@ -642,7 +652,8 @@ class MainWindow(QMainWindow):
         )
         guide4.addWidget(self._guide_label(
             "Tạo số quyết toán mới hoặc chọn một hay nhiều số quyết toán để nhập "
-            "thông tin và khoản chi. Mỗi nút mở đúng tác vụ tương ứng."
+            "thông tin, khoản chi và doanh thu. Doanh thu được kiểm tra và lưu riêng, "
+            "không qua Excel hằng ngày."
         ))
         self.lbl_rpa_status = QLabel("Chưa thực hiện bước này trong phiên làm việc.")
         self.lbl_rpa_status.setObjectName("hintText")
@@ -678,6 +689,12 @@ class MainWindow(QMainWindow):
             action=True,
         )
         body4.addLayout(self._action_row(self.btn_input_expense, self.lbl_input_expense_path))
+        self.lbl_input_revenue_count = QLabel("")
+        self.lbl_input_revenue_count.setObjectName("metaText")
+        self.btn_input_revenue = self._make_button(
+            "Nhập doanh thu", self.on_input_revenue, variant="primary", action=True,
+        )
+        body4.addLayout(self._action_row(self.btn_input_revenue, self.lbl_input_revenue_count))
         self.btn_latest_rpa = self._make_button(
             "Xem dữ liệu gửi PAD gần nhất", self.on_show_latest_rpa
         )
@@ -840,6 +857,35 @@ class MainWindow(QMainWindow):
 
         self.append_log("Chưa có file bóc tách nào đang mở dở. Đang tìm trong thư mục output...")
         self._adopt_latest_output()
+
+    def _restore_revenue_from_current_file(self) -> None:
+        path = (self.current_working_file or {}).get("working_path") or ""
+        if not path or not os.path.isfile(path):
+            self._refresh_revenue_count()
+            return
+        try:
+            payload = load_extract_payload(path)
+            self._current_regular_count = sum(
+                not is_revenue_row(row) for row in payload["du_lieu_boc_tach"]
+            )
+            self.revenue_store.ingest_payload(payload, path)
+        except Exception:
+            self.logger.exception("Không khôi phục được doanh thu từ JSON hiện tại.")
+        self._refresh_revenue_count()
+        self._update_button_states()
+
+    def _refresh_revenue_count(self) -> None:
+        if not hasattr(self, "lbl_input_revenue_count"):
+            return
+        try:
+            rows = self.revenue_store.list_rows()
+            need = sum(row["review_status"] != "OK" for row in rows)
+            self.lbl_input_revenue_count.setText(
+                f"{len(rows)} dòng doanh thu · {need} cần kiểm tra"
+            )
+        except Exception:
+            self.logger.exception("Không đọc được số dòng doanh thu.")
+            self.lbl_input_revenue_count.setText("Không đọc được dữ liệu doanh thu")
 
     def _apply_record(self, record: Dict[str, Any], note: Optional[str] = None) -> None:
         """Đưa một bản ghi database thành file bóc tách đang làm việc."""
@@ -1052,9 +1098,10 @@ class MainWindow(QMainWindow):
         has_file = bool(cw and os.path.exists(cw.get("working_path") or ""))
         daily_path = self.config.daily_tracking_file
 
-        self.btn_view_extract.setEnabled(has_file)
+        self.btn_view_extract.setEnabled(has_file and self._current_regular_count > 0)
         self.btn_import_daily.setEnabled(
             has_file
+            and self._current_regular_count > 0
             and bool(daily_path and os.path.isfile(daily_path))
             and not self._daily_import_running
         )
@@ -1437,18 +1484,57 @@ class MainWindow(QMainWindow):
         output để người dùng kiểm tra ở Bước 2 và Bước 3 đọc trực tiếp. Lô
         mới thay thế lô cũ nên bản JSON tạm trước đó được dọn đi.
         """
-        self._discard_temp_json(keep_path=result.get("working_path"))
+        path = result.get("working_path") or ""
+        try:
+            payload = load_extract_payload(path)
+            regular_count = sum(
+                not is_revenue_row(row) for row in payload["du_lieu_boc_tach"]
+            )
+            added_revenue = self.revenue_store.ingest_payload(payload, path)
+        except Exception as exc:
+            self.logger.exception("Không tiếp nhận được JSON bóc tách.")
+            self.show_error("Không nhận được dữ liệu bóc tách", str(exc))
+            return
+        # Only discard the previous temporary JSON after revenue has been
+        # safely committed to SQLite.
+        self._discard_temp_json(keep_path=path)
         self.current_working_file = result
+        self._current_regular_count = regular_count
+        self._refresh_revenue_count()
         self._update_current_file_labels(
-            note="Trợ lý đã bóc tách dữ liệu xong. Đang mở màn hình kiểm tra JSON..."
+            note=("Trợ lý đã bóc tách dữ liệu xong. Đang mở màn hình kiểm tra JSON..."
+                  if regular_count else "Đã lưu doanh thu. Bấm Nhập doanh thu ở Bước 4 để kiểm tra.")
         )
         self.set_overall_status(
-            "READY_FOR_REVIEW",
-            "Trợ lý đã bóc tách dữ liệu xong. Đang mở màn hình kiểm tra JSON...",
+            "READY_FOR_REVIEW" if regular_count else "REVENUE_STAGED",
+            ("Trợ lý đã bóc tách dữ liệu xong. Đang mở màn hình kiểm tra JSON..."
+             if regular_count else "Doanh thu đã vào danh sách kiểm tra ở Bước 4."),
         )
+        if not regular_count:
+            result["status"] = "REVENUE_STAGED"
+            self.database.update_status(
+                result["id"], "REVENUE_STAGED",
+                note="Doanh thu đã lưu trong SQLite, chờ kiểm tra tại Bước 4.",
+            )
         self.refresh_history()
         self.append_log(f"File mới sẵn sàng: {result.get('file_name')}")
-        self._open_extract_editor(auto=True)
+        if added_revenue:
+            self.append_log(f"Đã lưu {added_revenue} dòng doanh thu mới vào database.")
+        if regular_count:
+            self._open_extract_editor(auto=True)
+        elif self._should_close_assistant_for_output(path):
+            QTimer.singleShot(0, self._close_active_assistant_browser)
+
+    def on_input_revenue(self) -> None:
+        """Open the revenue review screen, independently of daily Excel."""
+        self._restore_revenue_from_current_file()
+        try:
+            dialog = RevenueDialog(self.revenue_store, self)
+            dialog.exec()
+        except Exception as exc:
+            self.logger.exception("Không mở được cửa sổ doanh thu.")
+            self.show_error("Không mở được doanh thu", str(exc))
+        self._refresh_revenue_count()
 
     def _discard_temp_json(self, keep_path: Optional[str] = None) -> None:
         """Xóa file JSON tạm đang giữ (nếu có) khi nó không còn cần nữa.
@@ -1997,6 +2083,7 @@ class MainWindow(QMainWindow):
         """Dọn file JSON tạm sau khi đã nhập xong toàn bộ lô."""
         self._discard_temp_json()
         self.current_working_file = None
+        self._current_regular_count = 0
         self.overall_status = "DAILY_IMPORTED"
         # Không tự tay reset _last_saved_shown ở đây: để _refresh_saved_label thấy
         # giá trị cũ khác giá trị mới ("") mà xóa dòng “Lưu thành công lần cuối”,

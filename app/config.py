@@ -242,6 +242,33 @@ def get_default_settings(app_root: str = DEFAULT_APP_ROOT) -> Dict[str, Any]:
     }
 
 
+def rebase_moved_install(data: Dict[str, Any], config_path: str) -> Dict[str, Any]:
+    """Use the local installation's database when a copied settings file points away."""
+    old_root = os.path.normpath(str(data.get("app_root") or ""))
+    actual_root = os.path.normpath(os.path.dirname(os.path.dirname(os.path.abspath(config_path))))
+    if not old_root or os.path.normcase(old_root) == os.path.normcase(actual_root):
+        return data
+    # Keep intentionally configured external roots. A missing old root is the
+    # reliable signal that this settings file was copied to a different PC.
+    if os.path.exists(old_root):
+        return data
+    for key in (
+        "pad_bat_path", "pad_create_new_bat_path", "pad_input_information_bat_path",
+        "pad_input_expense_bat_path", "output_folder", "daily_tracking_file",
+    ):
+        value = str(data.get(key) or "")
+        if value and _is_inside_path(value, old_root):
+            data[key] = os.path.normpath(os.path.join(actual_root, os.path.relpath(value, old_root)))
+    # The daily workbook may have lived in the old user's Downloads folder.
+    # Do not create that profile on the new PC; use the local default until
+    # the user selects the customer's real workbook in Settings.
+    daily_path = str(data.get("daily_tracking_file") or "")
+    if daily_path and not os.path.exists(daily_path) and not _is_inside_path(daily_path, actual_root):
+        data["daily_tracking_file"] = default_daily_tracking_file(actual_root)
+    data["app_root"] = actual_root
+    return data
+
+
 class AppConfig:
     """Bọc dữ liệu cấu hình và các thao tác liên quan."""
 
@@ -262,6 +289,8 @@ class AppConfig:
             except (json.JSONDecodeError, OSError):
                 # File hỏng -> dùng mặc định nhưng không xóa file cũ.
                 data = {}
+            if isinstance(data, dict):
+                data = rebase_moved_install(data, config_path)
             defaults = get_default_settings((data or {}).get("app_root", DEFAULT_APP_ROOT))
             # Bổ sung các khóa còn thiếu bằng giá trị mặc định.
             merged = {**defaults, **(data or {})}
@@ -278,7 +307,7 @@ class AppConfig:
             before_normalize = dict(merged)
             normalize_single_output_settings(merged)
             config = cls(merged, config_path)
-            if merged != before_normalize:
+            if merged != before_normalize or merged != data:
                 config.save()
         else:
             config = cls(get_default_settings(), config_path)

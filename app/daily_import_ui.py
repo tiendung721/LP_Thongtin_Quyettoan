@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from .dialogs.base_dialog import ResizableDialog
 from .dialogs.notifications import notify
 from .extract_row_editor import ExtractRowEditor, has_low_confidence, needs_review, warning_items, warning_text
+from .revenue import is_revenue_row
 from .theme import repolish
 from .daily_import import (
     DOC_BILL,
@@ -232,13 +233,14 @@ class JsonExtractDialog(ResizableDialog):
         super().__init__(parent)
         self.path = path
         self.payload: Dict[str, Any] = load_extract_payload(path)
-        self.rows: List[Dict[str, Any]] = [
-            dict(row) for row in self.payload.get("du_lieu_boc_tach") or []
-        ]
+        all_rows = [dict(row) for row in self.payload.get("du_lieu_boc_tach") or []]
+        self._revenue_rows = [row for row in all_rows if is_revenue_row(row)]
+        regular_indexes = [index for index, row in enumerate(all_rows) if not is_revenue_row(row)]
+        self.rows: List[Dict[str, Any]] = [all_rows[index] for index in regular_indexes]
         # Lý do lỗi đi kèm từng dòng, giữ song song với self.rows để khi xóa dòng
         # thì lý do không bị lệch vị trí.
         self.row_errors: List[str] = [
-            str((error_rows or {}).get(index, "")) for index in range(len(self.rows))
+            str((error_rows or {}).get(index, "")) for index in regular_indexes
         ]
         self.saved = False
         self._dirty = False
@@ -615,7 +617,9 @@ class JsonExtractDialog(ResizableDialog):
         Không hiện thêm hộp thoại “đã lưu” bắt người dùng tắt: dòng “Lưu thành công
         lần cuối” ở Bước 2 tự cập nhật, thế là đủ báo thành công.
         """
-        self.payload["du_lieu_boc_tach"] = self.rows
+        # Revenue has its own review screen. Preserve it verbatim in a mixed
+        # GPT output when the user saves changes to the other document types.
+        self.payload["du_lieu_boc_tach"] = self.rows + self._revenue_rows
         try:
             save_extract_payload(self.path, self.payload)
         except DailyImportError as exc:

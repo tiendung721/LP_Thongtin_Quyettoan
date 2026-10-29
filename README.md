@@ -1,5 +1,26 @@
 # Trợ Lý Quyết Toán RPA
 
+## Luồng doanh thu
+
+GPT Custom có thể bóc tách bảng doanh thu từ Excel, PDF và ảnh thành JSON chung
+(schema `1.1`, dòng `loai_chung_tu = "Doanh thu"` có object `doanh_thu`).
+Phần mềm nhận từng dòng doanh thu vào SQLite `Database/app_state.db` trước khi
+JSON tạm bị thay thế. Bước 2 chỉ kiểm tra Phiếu cân, Bill và Khoản chi; doanh thu
+được kiểm tra trong cửa sổ **Nhập doanh thu** ở Bước 4.
+
+Trong cửa sổ này, bấm SQT và container để sửa đối tác, SQT, container, tiền gồm
+VAT; bấm **Lưu** để ghi vào SQLite. Hai cột **Trạng thái kiểm tra** (OK/Cần kiểm
+tra) và **Tiến độ nhập** (Chưa nhập/Đã nhập, có thể đổi thủ công) độc lập với
+nhau. Dòng thiếu thông tin vẫn nằm trong cùng bảng. Chỉ dòng OK và Chưa nhập
+được chọn cho lượt nhập sau này. Nút **Chạy nhập doanh thu** hiện thông báo khi
+PAD doanh thu chưa được cấu hình; chưa gửi dữ liệu hoặc tự đổi trạng thái nhập.
+Hai luồng Nhập thông tin và Nhập khoản chi vẫn dùng Excel hằng ngày như trước.
+
+Khi chuyển sang máy khác, app tự đổi các đường dẫn nằm trong thư mục cài cũ
+sang thư mục cài mới nếu thư mục cũ không còn tồn tại. File SQLite mới được tạo
+nếu chưa có; muốn mang lịch sử theo thì chuyển `Database/app_state.db` cùng app.
+Các đường dẫn ngoài thư mục app cần kiểm tra lại trong Cài đặt trên máy mới.
+
 Phần mềm desktop Windows điều phối luồng làm việc giữa **GPT Custom**, **file
 JSON bóc tách**, **file theo dõi hàng ngày** và **phần mềm quyết toán**.
 
