@@ -23,7 +23,7 @@ class PadLauncherTests(unittest.TestCase):
             json.dumps(
                 {
                     "create_new": {
-                        "workflow_name": "Test - tạo dòng quyết toán mới",
+                        "workflow_name": "Test - tao dong quyet toan moi",
                         "workflow_id": "",
                     },
                     "input_information": {
@@ -46,14 +46,52 @@ class PadLauncherTests(unittest.TestCase):
     def _query(self, url: str) -> dict[str, list[str]]:
         return urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
 
-    def test_create_new_url_preserves_vietnamese_flow_name(self) -> None:
+    def test_create_new_url_uses_flow_name_shown_in_pad(self) -> None:
         config = pad_launcher.load_flow_config(self.root, "create_new")
         url = pad_launcher.build_run_url(config, {})
 
         self.assertEqual(
             self._query(url)["workflowName"],
-            ["Test - tạo dòng quyết toán mới"],
+            ["Test - tao dong quyet toan moi"],
         )
+
+    def test_create_new_url_does_not_require_pad_input_variable(self) -> None:
+        config = pad_launcher.load_flow_config(self.root, "create_new")
+        arguments = pad_launcher.input_arguments(self.root, "create_new", config)
+        url = pad_launcher.build_run_url(config, arguments)
+
+        self.assertEqual(arguments, {})
+        self.assertNotIn("inputArguments", self._query(url))
+
+    def test_create_new_rejects_count_outside_allowed_range(self) -> None:
+        config = pad_launcher.load_flow_config(self.root, "create_new")
+        for count in (0, 101, True):
+            with self.subTest(count=count):
+                with self.assertRaises(pad_launcher.PadLauncherError):
+                    pad_launcher.validate_create_count(count)
+
+    def test_run_create_new_writes_selected_count_before_launch(self) -> None:
+        workflow_id = "11111111-2222-3333-4444-555555555555"
+        with (
+            patch(
+                "scripts.pad_launcher.known_local_flows",
+                return_value={workflow_id: "Test - tao dong quyet toan moi"},
+            ),
+            patch("scripts.pad_launcher.launch") as launch,
+        ):
+            self.assertEqual(pad_launcher.run(self.root, "create_new", count=5), 0)
+
+        url = launch.call_args.args[0]
+        self.assertEqual(self._query(url)["workflowId"], [workflow_id])
+        self.assertNotIn("inputArguments", self._query(url))
+        request_path = self.root / "runtime" / "create_new_request.json"
+        self.assertEqual(json.loads(request_path.read_text(encoding="utf-8")), {"count": 5})
+
+    def test_create_new_dry_run_does_not_write_request(self) -> None:
+        with patch("scripts.pad_launcher.known_local_flows", return_value={}):
+            self.assertEqual(pad_launcher.run(self.root, "create_new", count=5, dry_run=True), 0)
+
+        self.assertFalse((self.root / "runtime" / "create_new_request.json").exists())
 
     def test_input_information_url_includes_selection_paths(self) -> None:
         config = pad_launcher.load_flow_config(self.root, "input_information")

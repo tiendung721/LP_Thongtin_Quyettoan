@@ -1,0 +1,36 @@
+SET ProjectRoot TO $'''C:\Users\Admin\Desktop\test\quyettoan_pm_project'''
+SET RequestFile TO $'''%ProjectRoot%\runtime\create_new_request.json'''
+IF (File.IfFile.DoesNotExist File: RequestFile) THEN
+    Display.ShowMessageDialog.ShowMessage Title: $'''PAD tạo Số QT mới''' Message: $'''Không tìm thấy yêu cầu tạo mới từ PM. Hãy bấm Tạo số quyết toán mới trong PM trước.''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+    EXIT Code: 1
+END
+File.ReadTextFromFile.ReadText File: RequestFile Encoding: File.TextFileEncoding.UTF8 Content=> RequestJson
+Variables.ConvertJsonToCustomObject Json: RequestJson CustomObject=> Request
+SET CreateCount TO Request['count']
+IF CreateCount < 1 THEN
+    Display.ShowMessageDialog.ShowMessage Title: $'''PAD tạo Số QT mới''' Message: $'''Số lượng phải từ 1 đến 100.''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+    EXIT Code: 1
+END
+IF CreateCount > 100 THEN
+    Display.ShowMessageDialog.ShowMessage Title: $'''PAD tạo Số QT mới''' Message: $'''Số lượng phải từ 1 đến 100.''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+    EXIT Code: 1
+END
+File.Delete Files: RequestFile
+WebAutomation.LaunchChrome.LaunchChrome Url: $'''https://qlqt.techber.vn/App/QuyetToans''' WindowState: WebAutomation.BrowserWindowState.Maximized ClearCache: False ClearCookies: False WaitForPageToLoadTimeout: 60 Timeout: 60 PiPUserDataFolderMode: WebAutomation.PiPUserDataFolderModeEnum.AutomaticProfile TargetDesktop: $'''{\"DisplayName\":\"Local computer\",\"Route\":{\"ServerType\":\"Local\",\"ServerAddress\":\"\"},\"DesktopType\":\"local\"}''' BrowserInstance=> Browser
+WAIT 2
+LOOP LoopIndex FROM 1 TO CreateCount STEP 1
+    MouseAndKeyboard.SendMouseClick.ClickAt ClickType: MouseAndKeyboard.MouseClickType.LeftClick MillisecondsDelay: 0 X: 1009 Y: 156 RelativeTo: MouseAndKeyboard.PositionRelativeTo.Screen MovementStyle: MouseAndKeyboard.MovementStyle.Instant
+    WAIT 0.5
+    MouseAndKeyboard.SendMouseClick.ClickAt ClickType: MouseAndKeyboard.MouseClickType.LeftClick MillisecondsDelay: 0 X: 1768 Y: 228 RelativeTo: MouseAndKeyboard.PositionRelativeTo.Screen MovementStyle: MouseAndKeyboard.MovementStyle.Instant
+    WAIT 0.5
+    MouseAndKeyboard.SendMouseClick.ClickAt ClickType: MouseAndKeyboard.MouseClickType.LeftClick MillisecondsDelay: 0 X: 846 Y: 292 RelativeTo: MouseAndKeyboard.PositionRelativeTo.Screen MovementStyle: MouseAndKeyboard.MovementStyle.Instant
+    WAIT 0.5
+    MouseAndKeyboard.SendMouseClick.ClickAt ClickType: MouseAndKeyboard.MouseClickType.LeftClick MillisecondsDelay: 0 X: 694 Y: 431 RelativeTo: MouseAndKeyboard.PositionRelativeTo.Screen MovementStyle: MouseAndKeyboard.MovementStyle.Instant
+    WAIT 0.5
+    MouseAndKeyboard.SendMouseClick.ClickAt ClickType: MouseAndKeyboard.MouseClickType.LeftClick MillisecondsDelay: 0 X: 1349 Y: 528 RelativeTo: MouseAndKeyboard.PositionRelativeTo.Screen MovementStyle: MouseAndKeyboard.MovementStyle.Instant
+    WAIT 1
+    MouseAndKeyboard.SendKeys.FocusAndSendKeys TextToSend: $'''{F5}''' DelayBetweenKeystrokes: 10
+    WAIT 2
+END
+WebAutomation.CloseWebBrowser BrowserInstance: Browser
+EXIT Code: 0

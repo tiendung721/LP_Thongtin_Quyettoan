@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 
 DEFAULT_FLOWS: Dict[str, Dict[str, Any]] = {
     "create_new": {
-        "workflow_name": "Test - tạo dòng quyết toán mới",
+        "workflow_name": "Test - tao dong quyet toan moi",
         "workflow_id": "",
         "environment_id": "",
         "autologin": False,
@@ -105,6 +105,23 @@ def load_flow_config(project_root: Path, flow_key: str) -> Dict[str, Any]:
     return config
 
 
+def validate_create_count(count: int) -> None:
+    if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= 100:
+        raise PadLauncherError("Số lượng Số QT cần tạo phải từ 1 đến 100.")
+
+
+def write_create_new_request(project_root: Path, count: int) -> Path:
+    """Write the request consumed by the paste-ready PAD flow."""
+    validate_create_count(count)
+    request_path = project_root / "runtime" / "create_new_request.json"
+    try:
+        request_path.parent.mkdir(parents=True, exist_ok=True)
+        request_path.write_text(json.dumps({"count": count}), encoding="utf-8")
+    except OSError as exc:
+        raise PadLauncherError(f"Không ghi được yêu cầu tạo Số QT: {exc}") from exc
+    return request_path
+
+
 def input_arguments(project_root: Path, flow_key: str, config: Dict[str, Any]) -> Dict[str, str]:
     if flow_key not in {"input_information", "input_expense", "input_revenue"}:
         return {}
@@ -135,7 +152,7 @@ def input_arguments(project_root: Path, flow_key: str, config: Dict[str, Any]) -
     return result
 
 
-def build_run_url(config: Dict[str, Any], arguments: Dict[str, str]) -> str:
+def build_run_url(config: Dict[str, Any], arguments: Dict[str, Any]) -> str:
     params = []
     environment_id = str(config.get("environment_id") or "").strip()
     workflow_id = str(config.get("workflow_id") or "").strip()
@@ -308,8 +325,10 @@ def launch(url: str, project_root: Path) -> None:
     subprocess.Popen(["xdg-open", url])
 
 
-def run(project_root: Path, flow_key: str, *, dry_run: bool = False) -> int:
+def run(project_root: Path, flow_key: str, *, count: int = 1, dry_run: bool = False) -> int:
     project_root = project_root.resolve()
+    if flow_key == "create_new":
+        validate_create_count(count)
     config = load_flow_config(project_root, flow_key)
     known = known_local_flows()
     config = resolve_flow_config(project_root, flow_key, config, known)
@@ -319,11 +338,14 @@ def run(project_root: Path, flow_key: str, *, dry_run: bool = False) -> int:
     workflow_name = str(config.get("workflow_name") or "")
     workflow_id = str(config.get("workflow_id") or "")
 
-    _log(project_root, f"Launching flow_key={flow_key} workflow_id={workflow_id or '-'} workflow_name={workflow_name or '-'}")
+    _log(project_root, f"Launching flow_key={flow_key} count={count if flow_key == 'create_new' else '-'} workflow_id={workflow_id or '-'} workflow_name={workflow_name or '-'}")
     _log(project_root, f"URL={url}")
     if dry_run:
         print(url)
         return 0
+    if flow_key == "create_new":
+        request_path = write_create_new_request(project_root, count)
+        _log(project_root, f"Create request: {request_path} count={count}")
     launch(url, project_root)
     return 0
 
@@ -332,11 +354,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Launch a PAD flow.")
     parser.add_argument("--project-root", default=str(Path(__file__).resolve().parents[1]))
     parser.add_argument("--flow", required=True, choices=sorted(DEFAULT_FLOWS))
+    parser.add_argument("--count", type=int, default=1, help="Số SQT cần tạo với flow create_new (1–100).")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
     try:
-        return run(Path(args.project_root), args.flow, dry_run=args.dry_run)
+        return run(Path(args.project_root), args.flow, count=args.count, dry_run=args.dry_run)
     except PadLauncherError as exc:
         project_root = Path(args.project_root).resolve()
         _log(project_root, f"ERROR {exc}")

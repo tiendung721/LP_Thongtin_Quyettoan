@@ -46,6 +46,23 @@ class RpaLauncherTests(unittest.TestCase):
         self.assertIn("stdout", kwargs)
 
     @patch("app.services.rpa_launcher.subprocess.Popen")
+    def test_launch_bat_forwards_create_count(self, popen) -> None:
+        popen.return_value.wait.return_value = 0
+
+        launch_bat(
+            str(self.bat),
+            logger=self.logger,
+            description="tạo 5 Số QT mới",
+            missing_message="missing",
+            arguments=("5",),
+        )
+
+        self.assertEqual(
+            popen.call_args.args[0],
+            ["cmd.exe", "/d", "/c", str(self.bat.resolve()), "5"],
+        )
+
+    @patch("app.services.rpa_launcher.subprocess.Popen")
     def test_running_bat_is_returned_without_waiting_for_completion(self, popen) -> None:
         process = popen.return_value
         process.wait.side_effect = subprocess.TimeoutExpired("cmd.exe", 2)

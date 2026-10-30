@@ -1,7 +1,7 @@
 {
   "create_new": {
     "workflow_name": "Test - tạo dòng quyết toán mới",
-    "workflow_id": "",
+    "workflow_id": "34e7749f-96aa-4c51-b439-95ea15421af7",
     "environment_id": "",
     "autologin": false
   },

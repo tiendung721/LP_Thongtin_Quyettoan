@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
-from typing import Optional
+from typing import Optional, Sequence
 
 
 class RpaLaunchError(RuntimeError):
@@ -40,6 +40,7 @@ def launch_bat(
     logger,
     description: str,
     missing_message: str,
+    arguments: Sequence[str] = (),
 ) -> subprocess.Popen:
     """Start a BAT file without waiting for the PAD flow to finish."""
     path = validate_bat_path(bat_path, missing_message)
@@ -57,7 +58,7 @@ def launch_bat(
         ) as output_file:
             output_path = output_file.name
             process = subprocess.Popen(
-                ["cmd.exe", "/d", "/c", path],
+                ["cmd.exe", "/d", "/c", path, *arguments],
                 cwd=os.path.dirname(path) or None,
                 env=env,
                 stdout=output_file,

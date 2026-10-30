@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -727,6 +728,7 @@ class MainWindow(QMainWindow):
             self.config.pad_input_information_bat_path
         )
         self.edit_input_expense_bat = QLineEdit(self.config.pad_input_expense_bat_path)
+        self.edit_input_revenue_bat = QLineEdit(self.config.pad_input_revenue_bat_path)
         self.edit_output = QLineEdit(self.config.output_folder)
         self.edit_daily = QLineEdit(self.config.daily_tracking_file)
         self.edit_daily.setReadOnly(True)
@@ -734,7 +736,7 @@ class MainWindow(QMainWindow):
         rows = [
             ("File .bat mở trợ lý:", self.edit_bat, self._browse_bat),
             (
-                "File .bat tạo 1 Số QT mới:",
+                "File .bat tạo Số QT mới:",
                 self.edit_create_new_bat,
                 self._browse_create_new_bat,
             ),
@@ -747,6 +749,11 @@ class MainWindow(QMainWindow):
                 "File .bat nhập khoản chi:",
                 self.edit_input_expense_bat,
                 self._browse_input_expense_bat,
+            ),
+            (
+                "File .bat nhập doanh thu:",
+                self.edit_input_revenue_bat,
+                self._browse_input_revenue_bat,
             ),
             ("Thư mục output:", self.edit_output, self._browse_output),
             ("File theo dõi hàng ngày:", self.edit_daily, self._browse_daily_file),
@@ -1290,7 +1297,7 @@ class MainWindow(QMainWindow):
     def _browse_create_new_bat(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Chọn file .bat tạo 1 Số QT mới",
+            "Chọn file .bat tạo Số QT mới",
             self.edit_create_new_bat.text(),
             "Batch (*.bat);;Tất cả (*.*)",
         )
@@ -1316,6 +1323,16 @@ class MainWindow(QMainWindow):
         )
         if path:
             self.edit_input_expense_bat.setText(os.path.normpath(path))
+
+    def _browse_input_revenue_bat(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Chọn file .bat nhập doanh thu",
+            self.edit_input_revenue_bat.text(),
+            "Batch (*.bat);;Tất cả (*.*)",
+        )
+        if path:
+            self.edit_input_revenue_bat.setText(os.path.normpath(path))
 
     def _browse_output(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -1367,6 +1384,10 @@ class MainWindow(QMainWindow):
                 "pad_input_expense_bat_path",
                 self.edit_input_expense_bat.text().strip(),
             )
+            self.config.set(
+                "pad_input_revenue_bat_path",
+                self.edit_input_revenue_bat.text().strip(),
+            )
             self.config.set_output_folder(
                 self.edit_output.text().strip(),
                 daily_tracking_file=self.edit_daily.text().strip(),
@@ -1403,7 +1424,7 @@ class MainWindow(QMainWindow):
         )
         create_new_bat = self.edit_create_new_bat.text().strip()
         lines.append(
-            f"• File .bat tạo 1 Số QT mới: "
+            f"• File .bat tạo Số QT mới: "
             f"{'OK' if os.path.isfile(create_new_bat) else 'KHÔNG TỒN TẠI'}\n  {create_new_bat}"
         )
         input_information_bat = self.edit_input_information_bat.text().strip()
@@ -1415,6 +1436,11 @@ class MainWindow(QMainWindow):
         lines.append(
             f"• File .bat nhập khoản chi: "
             f"{'OK' if os.path.isfile(input_expense_bat) else 'KHÔNG TỒN TẠI'}\n  {input_expense_bat}"
+        )
+        input_revenue_bat = self.edit_input_revenue_bat.text().strip()
+        lines.append(
+            f"• File .bat nhập doanh thu: "
+            f"{'OK' if os.path.isfile(input_revenue_bat) else 'KHÔNG TỒN TẠI'}\n  {input_revenue_bat}"
         )
         out = self.edit_output.text().strip()
         lines.append(
@@ -2129,7 +2155,18 @@ class MainWindow(QMainWindow):
         self._begin_rpa_cooldown()
 
     def on_create_new_sqt(self) -> None:
-        """Gọi flow PAD tạo đúng một Số QT mới, không đọc Excel."""
+        """Hỏi số lượng rồi gọi một flow PAD tạo các Số QT mới."""
+        count, accepted = QInputDialog.getInt(
+            self,
+            "Tạo số quyết toán mới",
+            "Số lượng cần tạo (1–100):",
+            1,
+            1,
+            100,
+            1,
+        )
+        if not accepted:
+            return
         bat_path = self.config.pad_create_new_bat_path
         missing = (
             "Không tìm thấy file chạy RPA tạo mới.\n"
@@ -2139,8 +2176,9 @@ class MainWindow(QMainWindow):
             launch_bat(
                 bat_path,
                 logger=self.logger,
-                description="tạo 1 Số QT mới",
+                description=f"tạo {count} Số QT mới",
                 missing_message=missing,
+                arguments=(str(count),),
             )
         except RpaLaunchError as exc:
             self.logger.error("Không khởi chạy được RPA tạo mới: %s", exc)
@@ -2150,8 +2188,8 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self.logger.info("Đã gọi BAT tạo 1 Số QT mới: %s", bat_path)
-        self._mark_rpa_launched("Đã khởi chạy RPA tạo 1 Số QT mới")
+        self.logger.info("Đã gọi BAT tạo %s Số QT mới: %s", count, bat_path)
+        self._mark_rpa_launched(f"Đã khởi chạy RPA tạo {count} Số QT mới")
 
     def _run_selected_sqt_rpa(
         self,
