@@ -202,6 +202,47 @@ def _info_sheet_names(wb, requested_sheet: str) -> list[str]:
     raise MissingSheetError(f"Không tìm thấy sheet “{requested_sheet}”.")
 
 
+def read_monthly_sqt_sheets(daily_file: str) -> dict[str, str]:
+    """Map each unambiguous SQT to its monthly information sheet."""
+    if not daily_file or not os.path.isfile(daily_file):
+        raise DailyFileNotFoundError("Không tìm thấy file Excel hằng ngày.")
+    try:
+        if file_utils.is_file_locked(daily_file):
+            raise DailyFileLockedError(
+                "File Excel hằng ngày đang bị khóa. Vui lòng đóng Excel và thử lại."
+            )
+        wb = load_workbook(daily_file, read_only=True, data_only=True)
+        try:
+            sheets_by_sqt: dict[str, set[str]] = {}
+            for sheet_name in wb.sheetnames:
+                if not is_month_info_sheet(sheet_name):
+                    continue
+                ws = wb[sheet_name]
+                sqt_col = _header_map(ws).get(SQT_COLUMN)
+                if sqt_col is None:
+                    continue
+                for (raw_sqt,) in ws.iter_rows(
+                    min_row=2, min_col=sqt_col, max_col=sqt_col, values_only=True
+                ):
+                    sqt = normalize_sqt_value(raw_sqt)
+                    if sqt:
+                        sheets_by_sqt.setdefault(sqt, set()).add(sheet_name)
+            return {
+                sqt: next(iter(sheets)) for sqt, sheets in sheets_by_sqt.items()
+                if len(sheets) == 1
+            }
+        finally:
+            wb.close()
+    except SqtSelectionError:
+        raise
+    except PermissionError as exc:
+        raise DailyFileLockedError(
+            "File Excel hằng ngày đang bị khóa. Vui lòng đóng Excel và thử lại."
+        ) from exc
+    except (InvalidFileException, OSError, ValueError) as exc:
+        raise SqtSelectionError(f"Không thể đọc file {os.path.basename(daily_file)}.") from exc
+
+
 def read_sqt_items(daily_file: str, sheet_name: str = INFO_SHEET) -> List[SqtSelectionItem]:
     """Read unique SQT values in first-seen order and count source rows."""
     if not daily_file or not os.path.isfile(daily_file):

@@ -73,7 +73,7 @@ class SelectSqtDialogTests(unittest.TestCase):
         self.assertEqual(dialog.result(), QDialog.Accepted)
         self.assertEqual(dialog.selected_values(), ["597"])
 
-    def test_status_filter_preserves_selection_and_summary(self) -> None:
+    def test_status_filter_clears_selection_before_new_choice(self) -> None:
         items = [
             SqtSelectionItem("700", 2),
             SqtSelectionItem("701", 1, imported_row_count=1),
@@ -82,13 +82,17 @@ class SelectSqtDialogTests(unittest.TestCase):
         dialog = SelectSqtDialog(items)
 
         _check(dialog, "700")
-        dialog.status_combo.setCurrentIndex(3)
+        dialog.status_combo.setCurrentIndex(dialog.status_combo.findData("done"))
         self.assertEqual(sum(not dialog.table.isRowHidden(row) for row in range(3)), 1)
+        self.assertEqual(dialog.selected_values(), [])
+        self.assertEqual(dialog.top_summary.text(), "Chưa chọn số quyết toán nào")
         _check(dialog, "701")
 
-        self.assertEqual(dialog.selected_values(), ["700", "701"])
-        self.assertIn("1 cần nhập", dialog.top_summary.text())
+        self.assertEqual(dialog.selected_values(), ["701"])
         self.assertIn("1 nhập lại", dialog.top_summary.text())
+        dialog.status_combo.setCurrentIndex(dialog.status_combo.findData("all"))
+        self.assertEqual(dialog.selected_values(), [])
+        self.assertTrue(all(dialog.table.item(row, 0).checkState() == Qt.Unchecked for row in range(3)))
 
     def test_switching_month_clears_selection_from_previous_month(self) -> None:
         items = [
@@ -135,7 +139,7 @@ class SelectSqtDialogTests(unittest.TestCase):
             ["Tất cả", "Chưa nhập", "Đã nhập"],
         )
 
-    def test_expense_month_filter_keeps_selected_sqt_from_other_months(self) -> None:
+    def test_expense_month_filter_clears_selected_sqt_from_other_months(self) -> None:
         items = [
             SqtSelectionItem("716", 1, month_sheet_name="Tháng 7"),
             SqtSelectionItem("717", 1, month_sheet_name="Tháng 8"),
@@ -151,9 +155,24 @@ class SelectSqtDialogTests(unittest.TestCase):
         _check(dialog, "716")
         dialog.month_combo.setCurrentIndex(dialog.month_combo.findData("Tháng 8"))
         self.assertEqual(sum(not dialog.table.isRowHidden(row) for row in range(3)), 1)
+        self.assertEqual(dialog.selected_values(), [])
         _check(dialog, "717")
-        self.assertEqual(dialog.selected_values(), ["716", "717"])
+        self.assertEqual(dialog.selected_values(), ["717"])
         self.assertEqual(dialog.month_combo.itemText(dialog.month_combo.findData("__unknown__")), "Chưa xác định tháng — 1 SQT")
+
+    def test_expense_status_filter_clears_selection(self) -> None:
+        items = [
+            SqtSelectionItem("716", 1),
+            SqtSelectionItem("717", 1, imported_row_count=1),
+        ]
+        dialog = SelectSqtDialog(items, operation=EXPENSE_SELECTION_OPERATION)
+        dialog.select_all()
+
+        dialog.status_combo.setCurrentIndex(dialog.status_combo.findData("pending"))
+
+        self.assertEqual(dialog.selected_values(), [])
+        self.assertEqual(dialog.table.item(0, 0).checkState(), Qt.Unchecked)
+        self.assertEqual(dialog.top_summary.text(), "Chưa chọn số quyết toán nào")
 
     def test_searches_container_and_shows_selected_detail(self) -> None:
         from app.services.sqt_selection_service import SqtSourceRow
@@ -163,8 +182,10 @@ class SelectSqtDialogTests(unittest.TestCase):
             SqtSelectionItem("701", 1, source_rows=(SqtSourceRow(3, "WXYZ1234567", "2026-10-13"),)),
         ]
         dialog = SelectSqtDialog(items)
+        _check(dialog, "700")
         dialog.search_input.setText("wxyz")
 
+        self.assertEqual(dialog.selected_values(), [])
         self.assertEqual(sum(not dialog.table.isRowHidden(row) for row in range(2)), 1)
         self.assertEqual(dialog.detail_title.text(), "SQT 701")
         self.assertIn("13/10/2026", dialog.detail_meta.text())

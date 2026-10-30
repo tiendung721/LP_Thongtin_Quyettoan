@@ -1552,7 +1552,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._close_active_assistant_browser)
 
     def on_input_revenue(self) -> None:
-        """Open the revenue review screen, independently of daily Excel."""
+        """Open revenue review and use the daily workbook to label SQT months."""
         self._restore_revenue_from_current_file()
         try:
             dialog = RevenueDialog(
@@ -1560,6 +1560,7 @@ class MainWindow(QMainWindow):
                 selection_path=self.config.rpa_revenue_selection_path,
                 pad_bat_path=self.config.pad_input_revenue_bat_path,
                 logger=self.logger,
+                daily_file=self.config.daily_tracking_file,
             )
             dialog.exec()
         except Exception as exc:

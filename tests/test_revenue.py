@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from openpyxl import Workbook
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
@@ -157,6 +159,93 @@ class RevenueTests(unittest.TestCase):
         self.assertEqual(dialog.table.item(0, 5).foreground().color().name(), "#15803d")
         with self.store._connect() as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM revenue_row_events").fetchone()[0], 2)
+        dialog.close()
+        del app
+
+    def test_revenue_month_filter_uses_daily_sqt_and_clears_selection(self) -> None:
+        app = QApplication.instance() or QApplication([])
+        daily_file = Path(self.temp.name) / "daily.xlsx"
+        workbook = Workbook()
+        july = workbook.active
+        july.title = "Tháng 7"
+        july.append(["SQT PM"])
+        july.append([920])
+        august = workbook.create_sheet("Tháng 8")
+        august.append(["SQT PM"])
+        august.append([921])
+        legacy = workbook.create_sheet("Thong_Tin_Quyet_Toan")
+        legacy.append(["SQT PM"])
+        legacy.append([999])
+        workbook.save(daily_file)
+        workbook.close()
+        self.store.ingest_payload({"du_lieu_boc_tach": [
+            _row("920", "VSGU2231272", 75_239_928, "9"),
+            _row("921", "GAOU2133678", 77_497_560, "10"),
+            _row("999", "VIMU2250703", 74_082_168, "11"),
+        ]}, "output.json")
+
+        dialog = RevenueDialog(self.store, daily_file=str(daily_file))
+        self.assertEqual(dialog.month_filter.currentData(), "ALL")
+        self.assertEqual(dialog.table.rowCount(), 3)
+        dialog.month_filter.setCurrentIndex(dialog.month_filter.findData("Tháng 7"))
+        self.assertEqual(dialog.table.rowCount(), 1)
+        self.assertEqual(dialog.table.item(0, 1).text(), "920")
+        dialog.select_visible.click()
+        dialog.month_filter.setCurrentIndex(dialog.month_filter.findData("Tháng 8"))
+        self.assertEqual(dialog.table.rowCount(), 1)
+        self.assertEqual(dialog.table.item(0, 1).text(), "921")
+        self.assertEqual(len(dialog.selected_ids), 0)
+        dialog.select_visible.click()
+        self.assertEqual(len(dialog.selected_ids), 1)
+        dialog.month_filter.setCurrentIndex(dialog.month_filter.findData("UNKNOWN"))
+        self.assertEqual(dialog.table.rowCount(), 1)
+        self.assertEqual(dialog.table.item(0, 1).text(), "999")
+        self.assertEqual(len(dialog.selected_ids), 0)
+        self.assertIn("Đã chọn 0 dòng", dialog.summary.text())
+        dialog.close()
+        del app
+
+    def test_revenue_status_and_search_filters_clear_selection(self) -> None:
+        app = QApplication.instance() or QApplication([])
+        self.store.ingest_payload({"du_lieu_boc_tach": [
+            _row("920", "VSGU2231272", 75_239_928, "9"),
+            _row("921", "GAOU2133678", 77_497_560, "10"),
+        ]}, "output.json")
+        dialog = RevenueDialog(self.store)
+        dialog.select_visible.click()
+
+        dialog.import_filter.setCurrentIndex(dialog.import_filter.findData("CHUA_NHAP"))
+        self.assertEqual(dialog.selected_ids, set())
+        self.assertTrue(all(dialog.table.item(row, 0).checkState() == Qt.Unchecked for row in range(2)))
+
+        dialog.select_visible.click()
+        dialog.search.setText("921")
+        self.assertEqual(dialog.selected_ids, set())
+        self.assertEqual(dialog.table.rowCount(), 1)
+        self.assertIn("Đã chọn 0 dòng", dialog.summary.text())
+        dialog.close()
+        del app
+
+    def test_revenue_sqt_sort_keeps_checkbox_actions_on_correct_row(self) -> None:
+        app = QApplication.instance() or QApplication([])
+        self.store.ingest_payload({"du_lieu_boc_tach": [
+            _row("10", "VSGU2231272", 100, "9"),
+            _row("2", "GAOU2133678", 200, "10"),
+            _row("9", "VIMU2250703", 900, "11"),
+        ]}, "output.json")
+        dialog = RevenueDialog(self.store)
+        self.assertEqual(dialog.sort_combo.currentData(), "sqt_asc")
+        self.assertEqual([dialog.table.item(i, 1).text() for i in range(3)], ["2", "9", "10"])
+        dialog.table.item(0, 0).setCheckState(Qt.Checked)
+        selected_id = next(iter(dialog.selected_ids))
+        self.assertEqual(dialog.rows[selected_id]["sqt"], "2")
+        dialog.sort_combo.setCurrentIndex(dialog.sort_combo.findData("sqt_desc"))
+        self.assertEqual([dialog.table.item(i, 1).text() for i in range(3)], ["10", "9", "2"])
+        self.assertEqual(dialog.table.item(2, 0).checkState(), Qt.Checked)
+        dialog.bulk_status.setCurrentIndex(dialog.bulk_status.findData("DA_NHAP"))
+        dialog.bulk_apply.click()
+        self.assertEqual(dialog.rows[selected_id]["import_status"], "DA_NHAP")
+        self.assertEqual(len(dialog.drafts), 1)
         dialog.close()
         del app
 

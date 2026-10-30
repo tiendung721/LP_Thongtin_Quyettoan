@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 from PySide6.QtCore import Qt
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
+from ..daily_import import month_sheet_number
 from ..revenue import (
     RevenueStore, normalize_container, normalize_sqt, parse_amount_vnd,
     review_errors,
@@ -21,6 +23,7 @@ from ..revenue_pad import (
     RevenuePadError, build_selection, read_selection, validate_selection, write_selection,
 )
 from ..services.rpa_launcher import RpaLaunchError, launch_bat
+from ..services.sqt_selection_service import SqtSelectionError, read_monthly_sqt_sheets
 from .base_dialog import ResizableDialog
 from .notifications import notify
 
@@ -130,12 +133,15 @@ class RevenueDialog(ResizableDialog):
     def __init__(
         self, store: RevenueStore, parent=None, *,
         selection_path: str = "", pad_bat_path: str = "", logger=None,
+        daily_file: str = "",
     ):
         super().__init__(parent)
         self.store = store
         self.selection_path = selection_path
         self.pad_bat_path = pad_bat_path
         self.logger = logger
+        self.daily_file = daily_file
+        self.month_by_sqt = self._read_months()
         self.base_rows: dict[int, dict[str, Any]] = {}
         self.rows: dict[int, dict[str, Any]] = {}
         self.visible_ids: list[int] = []
@@ -146,42 +152,67 @@ class RevenueDialog(ResizableDialog):
         self.resize(1390, 800)
         self.setMinimumSize(950, 550)
         root = QVBoxLayout(self)
+        root.setContentsMargins(18, 16, 18, 16)
+        root.setSpacing(11)
         heading = QHBoxLayout()
         title = QLabel("Chọn số quyết toán · Nhập doanh thu")
         title.setObjectName("sqtDialogTitle")
         self.count = QLabel()
+        self.count.setObjectName("sqtCountBadge")
         heading.addWidget(title)
         heading.addWidget(self.count)
         heading.addStretch(1)
         root.addLayout(heading)
 
         filters = QGridLayout()
-        filters.addWidget(QLabel("Tìm SQT, Container hoặc đối tác"), 0, 0)
-        filters.addWidget(QLabel("Đối tác"), 0, 1)
-        filters.addWidget(QLabel("Trạng thái kiểm tra"), 0, 2)
-        filters.addWidget(QLabel("Tiến độ nhập"), 0, 3)
+        filters.setHorizontalSpacing(12)
+        filters.setVerticalSpacing(5)
+        for column, label in enumerate((
+            "Tìm SQT, Container hoặc đối tác", "Tháng theo SQT",
+            "Tiến độ nhập", "Sắp xếp",
+        )):
+            caption = QLabel(label)
+            caption.setObjectName("sqtFilterLabel")
+            filters.addWidget(caption, 0, column)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Nhập SQT, Container hoặc đối tác...")
-        self.partner_filter = QComboBox()
-        self.check_filter = QComboBox()
-        self.check_filter.addItem("Tất cả", "ALL")
-        self.check_filter.addItem("Cần kiểm tra", "CAN_KIEM_TRA")
-        self.check_filter.addItem("OK", "OK")
+        self.search.setClearButtonEnabled(True)
+        self.month_filter = QComboBox()
         self.import_filter = QComboBox()
         self.import_filter.addItem("Tất cả", "ALL")
         self.import_filter.addItem("Chưa nhập", "CHUA_NHAP")
         self.import_filter.addItem("Đã nhập", "DA_NHAP")
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItem("SQT tăng dần", "sqt_asc")
+        self.sort_combo.addItem("SQT giảm dần", "sqt_desc")
+        self.sort_combo.addItem("Mới nhất", "newest")
         filters.addWidget(self.search, 1, 0)
-        filters.addWidget(self.partner_filter, 1, 1)
-        filters.addWidget(self.check_filter, 1, 2)
-        filters.addWidget(self.import_filter, 1, 3)
-        self.select_visible = QPushButton("Chọn hiển thị")
-        self.clear_selection = QPushButton("Bỏ chọn")
-        filters.addWidget(self.select_visible, 2, 2)
-        filters.addWidget(self.clear_selection, 2, 3)
+        filters.addWidget(self.month_filter, 1, 1)
+        filters.addWidget(self.import_filter, 1, 2)
+        filters.addWidget(self.sort_combo, 1, 3)
+        filters.setColumnStretch(0, 5)
+        for column in (1, 2, 3):
+            filters.setColumnStretch(column, 2)
         root.addLayout(filters)
 
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self.select_visible = QPushButton("Chọn hiển thị")
+        self.clear_selection = QPushButton("Bỏ chọn")
+        actions.addWidget(self.select_visible)
+        actions.addWidget(self.clear_selection)
+        actions.addStretch(1)
+        actions.addWidget(QLabel("Đổi tiến độ cho dòng đã chọn:"))
+        self.bulk_status = QComboBox()
+        self.bulk_status.addItem("Chưa nhập", "CHUA_NHAP")
+        self.bulk_status.addItem("Đã nhập", "DA_NHAP")
+        self.bulk_apply = QPushButton("Áp dụng hàng loạt")
+        actions.addWidget(self.bulk_status)
+        actions.addWidget(self.bulk_apply)
+        root.addLayout(actions)
+
         self.table = QTableWidget(0, len(self.COLUMNS))
+        self.table.setObjectName("sqtSelectionTable")
         self.table.setHorizontalHeaderLabels(self.COLUMNS)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -193,17 +224,6 @@ class RevenueDialog(ResizableDialog):
         root.addWidget(self.table, 1)
         hint = QLabel("Bấm một dòng để sửa; các thay đổi chỉ được ghi khi bấm Lưu tất cả.")
         root.addWidget(hint)
-
-        bulk = QHBoxLayout()
-        bulk.addWidget(QLabel("Đổi tiến độ nhập cho các dòng đã chọn:"))
-        self.bulk_status = QComboBox()
-        self.bulk_status.addItem("Chưa nhập", "CHUA_NHAP")
-        self.bulk_status.addItem("Đã nhập", "DA_NHAP")
-        self.bulk_apply = QPushButton("Áp dụng hàng loạt")
-        bulk.addWidget(self.bulk_status)
-        bulk.addWidget(self.bulk_apply)
-        bulk.addStretch(1)
-        root.addLayout(bulk)
 
         footer = QHBoxLayout()
         self.summary = QLabel()
@@ -218,10 +238,10 @@ class RevenueDialog(ResizableDialog):
         footer.addWidget(close)
         root.addLayout(footer)
 
-        self.search.textChanged.connect(self._render)
-        self.partner_filter.currentIndexChanged.connect(self._render)
-        self.check_filter.currentIndexChanged.connect(self._render)
-        self.import_filter.currentIndexChanged.connect(self._render)
+        self.search.textChanged.connect(self._on_filter_changed)
+        self.import_filter.currentIndexChanged.connect(self._on_filter_changed)
+        self.month_filter.currentIndexChanged.connect(self._on_filter_changed)
+        self.sort_combo.currentIndexChanged.connect(self._render)
         self.select_visible.clicked.connect(self._select_visible)
         self.clear_selection.clicked.connect(self._clear_selected)
         self.bulk_apply.clicked.connect(self._apply_bulk_status)
@@ -238,36 +258,69 @@ class RevenueDialog(ResizableDialog):
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         return item
 
+    def _read_months(self) -> dict[str, str]:
+        if not self.daily_file:
+            return {}
+        try:
+            return read_monthly_sqt_sheets(self.daily_file)
+        except SqtSelectionError as exc:
+            if self.logger is not None:
+                self.logger.warning("Không đối chiếu được tháng doanh thu: %s", exc)
+            return {}
+
+    def _month_for_sqt(self, sqt: str) -> str:
+        return self.month_by_sqt.get(normalize_sqt(sqt), "")
+
+    def _matches_month(self, sqt: str, selected_month: str | None) -> bool:
+        if selected_month in (None, "ALL"):
+            return True
+        month = self._month_for_sqt(sqt)
+        return not month if selected_month == "UNKNOWN" else month == selected_month
+
     def _reload(self) -> None:
         loaded = self.store.list_rows()
         self.base_rows = {row["id"]: row for row in loaded}
         self.rows = {row["id"]: dict(row) for row in loaded}
         self.drafts.clear()
-        selected_partner = self.partner_filter.currentData()
-        self.partner_filter.blockSignals(True)
-        self.partner_filter.clear()
-        self.partner_filter.addItem("Tất cả đối tác", "ALL")
-        for partner in sorted({row["partner"] for row in loaded}, key=str.casefold):
-            self.partner_filter.addItem(partner or "(Chưa rõ đối tác)", partner)
-        index = self.partner_filter.findData(selected_partner)
-        self.partner_filter.setCurrentIndex(index if index >= 0 else 0)
-        self.partner_filter.blockSignals(False)
+        selected_month = self.month_filter.currentData()
+        months = {self._month_for_sqt(row["sqt"]) for row in loaded}
+        self.month_filter.blockSignals(True)
+        self.month_filter.clear()
+        self.month_filter.addItem("Tất cả tháng", "ALL")
+        for month in sorted((name for name in months if name), key=month_sheet_number):
+            self.month_filter.addItem(month, month)
+        if "" in months:
+            self.month_filter.addItem("Chưa xác định tháng", "UNKNOWN")
+        index = self.month_filter.findData(selected_month)
+        self.month_filter.setCurrentIndex(index if index >= 0 else 0)
+        self.month_filter.blockSignals(False)
         self.count.setText(f"{len(loaded)} dòng doanh thu")
         self.selected_ids.intersection_update(self.rows)
         self._render()
 
+    def _on_filter_changed(self, *_args) -> None:
+        self.selected_ids.clear()
+        self._render()
+
     def _render(self, *_args) -> None:
         query = self.search.text().strip().casefold()
-        partner = self.partner_filter.currentData()
-        check = self.check_filter.currentData()
         progress = self.import_filter.currentData()
+        month = self.month_filter.currentData()
         self.visible_ids = [row_id for row_id, row in self.rows.items()
-                            if partner in (None, "ALL", row["partner"])
-                            and check in (None, "ALL", row["review_status"])
-                            and progress in (None, "ALL", row["import_status"])
+                            if progress in (None, "ALL", row["import_status"])
+                            and self._matches_month(row["sqt"], month)
                             and (not query or query in " ".join((
                                 row["sqt"], row["container"], row["partner"]
                             )).casefold())]
+        sort_order = self.sort_combo.currentData()
+        if sort_order in ("sqt_asc", "sqt_desc"):
+            self.visible_ids.sort(
+                key=lambda row_id: tuple(
+                    (0, int(part)) if part.isdigit() else (1, part.casefold())
+                    for part in re.split(r"(\d+)", self.rows[row_id]["sqt"] or "")
+                ),
+                reverse=sort_order == "sqt_desc",
+            )
         self.table.blockSignals(True)
         self.table.setRowCount(len(self.visible_ids))
         for index, row_id in enumerate(self.visible_ids):

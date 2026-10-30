@@ -245,10 +245,10 @@ class SelectSqtDialog(ResizableDialog):
         footer.addWidget(cancel)
         root.addLayout(footer)
 
-        self.search_input.textChanged.connect(self._apply_filters)
-        self.status_combo.currentIndexChanged.connect(self._apply_filters)
+        self.search_input.textChanged.connect(self._on_filter_changed)
+        self.status_combo.currentIndexChanged.connect(self._on_filter_changed)
         self.sort_combo.currentIndexChanged.connect(self._rebuild_table)
-        self.month_combo.currentIndexChanged.connect(self._on_month_changed)
+        self.month_combo.currentIndexChanged.connect(self._on_filter_changed)
         self._rebuild_table()
 
     def _populate_months(self) -> None:
@@ -358,16 +358,18 @@ class SelectSqtDialog(ResizableDialog):
         self._update_summary(visible_count=len(visible))
 
     @Slot()
-    def _on_month_changed(self, *_args) -> None:
-        if self.is_expense:
-            self._apply_filters()
-            return
-        self._checked_keys.clear()
-        self.table.blockSignals(True)
-        for row in range(self.table.rowCount()):
-            self.table.item(row, 0).setCheckState(Qt.Unchecked)
-        self.table.blockSignals(False)
+    def _on_filter_changed(self, *_args) -> None:
+        self._clear_checked()
         self._apply_filters()
+
+    def _clear_checked(self) -> None:
+        self._checked_keys.clear()
+        previous = self.table.blockSignals(True)
+        try:
+            for row in range(self.table.rowCount()):
+                self.table.item(row, 0).setCheckState(Qt.Unchecked)
+        finally:
+            self.table.blockSignals(previous)
 
     @Slot()
     def _cell_changed(self, row: int, column: int) -> None:
@@ -390,10 +392,7 @@ class SelectSqtDialog(ResizableDialog):
 
     @Slot()
     def clear_all(self) -> None:
-        for row, item in enumerate(self._display_items):
-            if not self.table.isRowHidden(row):
-                self._checked_keys.discard(self._key(item))
-                self.table.item(row, 0).setCheckState(Qt.Unchecked)
+        self._clear_checked()
         self._update_summary()
 
     def selected_items(self) -> List[SqtSelectionItem]:
