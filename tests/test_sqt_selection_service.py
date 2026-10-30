@@ -230,6 +230,39 @@ class SqtSelectionServiceTests(unittest.TestCase):
             ],
         )
 
+    def test_expense_items_use_matching_monthly_sqt_without_changing_pad_sheet(self) -> None:
+        wb = Workbook()
+        july = wb.active
+        july.title = "Tháng 7"
+        july.append(["SQT PM"])
+        july.append([716])
+        august = wb.create_sheet("Tháng 8")
+        august.append(["SQT PM"])
+        august.append([717])
+        expense = wb.create_sheet(EXPENSE_SHEET)
+        expense.append(["SQT PM", "Số Container", "Trạng thái nhập"])
+        expense.append([716, "CONT01", "Chưa nhập"])
+        expense.append([717, "CONT02", "Đã nhập"])
+        expense.append([718, "CONT03", "Chưa nhập"])
+        wb.save(self.daily)
+        wb.close()
+
+        items = read_sqt_items(str(self.daily), EXPENSE_SHEET)
+        self.assertEqual(
+            [(item.value, item.month_sheet_name, item.sheet_name) for item in items],
+            [("716", "Tháng 7", ""), ("717", "Tháng 8", ""), ("718", "", "")],
+        )
+        self.assertEqual(resolve_selection_sheet(EXPENSE_SHEET, items[:2]), EXPENSE_SHEET)
+        target = self.root / "expense_selection.json"
+        write_selection_json(
+            target, str(self.daily), ["716", "717"], sheet_name=EXPENSE_SHEET,
+            operation=EXPENSE_SELECTION_OPERATION, selected_items=items[:2],
+        )
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(payload["sheet_name"], EXPENSE_SHEET)
+        self.assertEqual(payload["selected_sqt"], ["716", "717"])
+        self.assertNotIn("selected_items", payload)
+
     def test_resolve_selection_sheet_uses_month_sheet(self) -> None:
         self._make_monthly_daily()
         items = read_sqt_items(str(self.daily))

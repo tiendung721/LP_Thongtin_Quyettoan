@@ -90,6 +90,7 @@ class SqtSelectionItem:
     row_numbers: tuple[int, ...] = ()
     imported_row_count: int = 0
     source_rows: tuple[SqtSourceRow, ...] = ()
+    month_sheet_name: str = ""
 
     @property
     def pending_row_count(self) -> int:
@@ -219,6 +220,20 @@ def read_sqt_items(daily_file: str, sheet_name: str = INFO_SHEET) -> List[SqtSel
         wb = load_workbook(daily_file, read_only=True, data_only=True)
         sheet_names = _info_sheet_names(wb, sheet_name)
 
+        expense_months: dict[str, set[str]] = {}
+        if sheet_name == EXPENSE_SHEET:
+            for month_sheet in (name for name in wb.sheetnames if is_month_info_sheet(name)):
+                month_ws = wb[month_sheet]
+                month_sqt_col = _header_map(month_ws).get(SQT_COLUMN)
+                if month_sqt_col is None:
+                    continue
+                for (raw_sqt,) in month_ws.iter_rows(
+                    min_row=2, min_col=month_sqt_col, max_col=month_sqt_col, values_only=True
+                ):
+                    month_sqt = normalize_sqt_value(raw_sqt)
+                    if month_sqt:
+                        expense_months.setdefault(month_sqt, set()).add(month_sheet)
+
         counts: "OrderedDict[tuple[str, str], dict[str, Any]]" = OrderedDict()
         for current_sheet in sheet_names:
             ws = wb[current_sheet]
@@ -284,6 +299,10 @@ def read_sqt_items(daily_file: str, sheet_name: str = INFO_SHEET) -> List[SqtSel
                 row_numbers=tuple(entry["row_numbers"]),
                 imported_row_count=entry["imported_row_count"],
                 source_rows=tuple(entry["source_rows"]),
+                month_sheet_name=(
+                    next(iter(expense_months[sqt]))
+                    if len(expense_months.get(sqt, ())) == 1 else ""
+                ),
             )
             for (sheet, sqt), entry in counts.items()
         ]

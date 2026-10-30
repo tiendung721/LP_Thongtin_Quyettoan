@@ -128,8 +128,32 @@ class SelectSqtDialogTests(unittest.TestCase):
 
         self.assertIn("khoản chi", dialog.windowTitle())
         self.assertEqual(dialog.btn_run.text(), "Chạy nhập khoản chi")
-        self.assertFalse(dialog.month_combo.isVisible())
+        self.assertTrue(dialog.month_combo.isHidden())
         self.assertEqual(dialog.table.columnCount(), 7)
+        self.assertEqual(
+            [dialog.status_combo.itemText(index) for index in range(dialog.status_combo.count())],
+            ["Tất cả", "Chưa nhập", "Đã nhập"],
+        )
+
+    def test_expense_month_filter_keeps_selected_sqt_from_other_months(self) -> None:
+        items = [
+            SqtSelectionItem("716", 1, month_sheet_name="Tháng 7"),
+            SqtSelectionItem("717", 1, month_sheet_name="Tháng 8"),
+            SqtSelectionItem("718", 1),
+        ]
+        dialog = SelectSqtDialog(items, operation=EXPENSE_SELECTION_OPERATION)
+        self.assertFalse(dialog.month_combo.isHidden())
+        self.assertEqual(dialog.month_combo.currentData(), "__all__")
+        self.assertEqual(dialog.selection_summary.text().split(" · ")[0], "Hiển thị 3 SQT")
+
+        dialog.month_combo.setCurrentIndex(dialog.month_combo.findData("Tháng 7"))
+        self.assertEqual(sum(not dialog.table.isRowHidden(row) for row in range(3)), 1)
+        _check(dialog, "716")
+        dialog.month_combo.setCurrentIndex(dialog.month_combo.findData("Tháng 8"))
+        self.assertEqual(sum(not dialog.table.isRowHidden(row) for row in range(3)), 1)
+        _check(dialog, "717")
+        self.assertEqual(dialog.selected_values(), ["716", "717"])
+        self.assertEqual(dialog.month_combo.itemText(dialog.month_combo.findData("__unknown__")), "Chưa xác định tháng — 1 SQT")
 
     def test_searches_container_and_shows_selected_detail(self) -> None:
         from app.services.sqt_selection_service import SqtSourceRow

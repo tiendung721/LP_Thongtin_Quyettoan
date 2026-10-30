@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from .base_dialog import ResizableDialog
 from .notifications import notify
+from ..daily_import import month_sheet_number
 from ..services.sqt_selection_service import (
     EXPENSE_SELECTION_OPERATION,
     SELECTION_OPERATION,
@@ -139,15 +140,19 @@ class SelectSqtDialog(ResizableDialog):
         self.status_combo = QComboBox()
         self.status_combo.addItem("Tất cả", "all")
         self.status_combo.addItem("Chưa nhập", "pending")
-        self.status_combo.addItem("Nhập một phần", "partial")
+        if not self.is_expense:
+            self.status_combo.addItem("Nhập một phần", "partial")
         self.status_combo.addItem("Đã nhập", "done")
         filters.addWidget(self.status_combo, 1, 1)
-        self.month_label = _label("Sheet tháng" if not self.is_expense else "Nguồn khoản chi", "sqtFilterLabel")
+        self.month_label = _label("Tháng theo SQT" if self.is_expense else "Sheet tháng", "sqtFilterLabel")
         filters.addWidget(self.month_label, 2, 0)
         filters.addWidget(_label("Sắp xếp", "sqtFilterLabel"), 2, 1)
         self.month_combo = QComboBox()
         self._populate_months()
-        show_month = not self.is_expense and any(item.sheet_name for item in self.items)
+        show_month = any(
+            item.month_sheet_name if self.is_expense else item.sheet_name
+            for item in self.items
+        )
         self.month_combo.setVisible(show_month)
         filters.addWidget(self.month_combo, 3, 0)
         self.source_label = _label("Khoan_Chi" if self.is_expense else "Thong_Tin_Quyet_Toan", "sqtSourceLabel")
@@ -249,8 +254,14 @@ class SelectSqtDialog(ResizableDialog):
     def _populate_months(self) -> None:
         grouped: OrderedDict[str, int] = OrderedDict()
         for item in self.items:
-            sheet = item.sheet_name or ""
+            sheet = (item.month_sheet_name if self.is_expense else item.sheet_name) or ""
             grouped[sheet] = grouped.get(sheet, 0) + 1
+        if self.is_expense:
+            self.month_combo.addItem(f"Tất cả — {len(self.items)} SQT", "__all__")
+            for sheet in sorted(grouped, key=lambda name: month_sheet_number(name) or 99):
+                label = f"{sheet} — {grouped[sheet]} SQT" if sheet else f"Chưa xác định tháng — {grouped[sheet]} SQT"
+                self.month_combo.addItem(label, sheet or "__unknown__")
+            return
         for sheet, count in grouped.items():
             self.month_combo.addItem(f"{sheet} — {count} SQT" if sheet else f"{count} SQT", sheet)
 
@@ -312,7 +323,11 @@ class SelectSqtDialog(ResizableDialog):
         self._apply_filters(preferred=previous)
 
     def _matches_filters(self, item: SqtSelectionItem) -> bool:
-        if item.sheet_name != self._active_sheet():
+        active_sheet = self._active_sheet()
+        if self.is_expense:
+            if active_sheet != "__all__" and (item.month_sheet_name or "__unknown__") != active_sheet:
+                return False
+        elif item.sheet_name != active_sheet:
             return False
         status = self.status_combo.currentData()
         if status != "all" and item.status_kind != status:
@@ -344,6 +359,9 @@ class SelectSqtDialog(ResizableDialog):
 
     @Slot()
     def _on_month_changed(self, *_args) -> None:
+        if self.is_expense:
+            self._apply_filters()
+            return
         self._checked_keys.clear()
         self.table.blockSignals(True)
         for row in range(self.table.rowCount()):
@@ -427,7 +445,7 @@ class SelectSqtDialog(ResizableDialog):
         unit = "khoản chi" if self.is_expense else "dòng"
         meta = f"{item.row_count} {unit} · {len(_containers(item))} Cont · Ngày đóng {_date_preview(item)}"
         if self.is_expense:
-            meta += f"\nTổng tiền: {_total_text(item)}"
+            meta += f" · {item.month_sheet_name or 'Chưa xác định tháng'}\nTổng tiền: {_total_text(item)}"
         self.detail_meta.setText(meta)
         self.detail_status.setText(item.status_text)
         self.detail_status.setProperty("tone", item.status_kind)
