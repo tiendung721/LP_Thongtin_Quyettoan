@@ -42,6 +42,18 @@ DEFAULT_FLOWS: Dict[str, Dict[str, Any]] = {
             "project_root": "ProjectRoot",
         },
     },
+    "input_revenue": {
+        "workflow_name": "Test - nhập doanh thu",
+        "workflow_id": "",
+        "environment_id": "",
+        "autologin": False,
+        "input_arguments_enabled": False,
+        "input_argument_names": {
+            "selection_json": "SelectionJsonPath",
+            "helper_script": "HelperScriptPath",
+            "project_root": "ProjectRoot",
+        },
+    },
 }
 
 
@@ -94,16 +106,20 @@ def load_flow_config(project_root: Path, flow_key: str) -> Dict[str, Any]:
 
 
 def input_arguments(project_root: Path, flow_key: str, config: Dict[str, Any]) -> Dict[str, str]:
-    if flow_key not in {"input_information", "input_expense"}:
+    if flow_key not in {"input_information", "input_expense", "input_revenue"}:
         return {}
     if config.get("input_arguments_enabled") is False:
         return {}
 
-    selection_json = project_root / "runtime" / "rpa_input_selection.json"
-    helper_script = project_root / "scripts" / "rpa_excel_helper.py"
+    if flow_key == "input_revenue":
+        selection_json = project_root / "runtime" / "rpa_revenue_selection.json"
+        helper_script = project_root / "scripts" / "rpa_revenue_helper.py"
+    else:
+        selection_json = project_root / "runtime" / "rpa_input_selection.json"
+        helper_script = project_root / "scripts" / "rpa_excel_helper.py"
     if not selection_json.is_file():
         raise PadLauncherError(
-            f"Thiếu file runtime/rpa_input_selection.json: {selection_json}"
+            f"Thiếu file lựa chọn PAD: {selection_json}"
         )
     if not helper_script.is_file():
         raise PadLauncherError(f"Thiếu helper script: {helper_script}")

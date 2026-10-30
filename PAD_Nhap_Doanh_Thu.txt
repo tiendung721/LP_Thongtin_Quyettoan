@@ -1,0 +1,250 @@
+SET ProjectRoot TO $'''C:\Users\Admin\Desktop\test\quyettoan_pm_project'''
+SET SelectionFile TO $'''%ProjectRoot%\runtime\rpa_revenue_selection.json'''
+SET PythonExe TO $'''%ProjectRoot%\.venv\Scripts\python.exe'''
+SET HelperScript TO $'''%ProjectRoot%\scripts\rpa_revenue_helper.py'''
+SET QuyetToanUrl TO $'''https://qlqt.techber.vn/App/QuyetToans'''
+SET ProcessedSqtCount TO 0
+IF (File.IfFile.DoesNotExist File: SelectionFile) THEN
+    Display.ShowMessageDialog.ShowMessage Title: $'''PAD doanh thu''' Message: $'''Không tìm thấy file lựa chọn doanh thu: %SelectionFile%''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+    EXIT Code: 1
+END
+IF (File.IfFile.DoesNotExist File: PythonExe) THEN
+    Display.ShowMessageDialog.ShowMessage Title: $'''PAD doanh thu''' Message: $'''Không tìm thấy Python: %PythonExe%''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+    EXIT Code: 1
+END
+IF (File.IfFile.DoesNotExist File: HelperScript) THEN
+    Display.ShowMessageDialog.ShowMessage Title: $'''PAD doanh thu''' Message: $'''Không tìm thấy helper: %HelperScript%''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+    EXIT Code: 1
+END
+File.ReadTextFromFile.ReadText File: SelectionFile Encoding: File.TextFileEncoding.UTF8 Content=> SelectionJson
+Variables.ConvertJsonToCustomObject Json: SelectionJson CustomObject=> Selection
+SET Operation TO Selection['operation']
+SET Items TO Selection['items']
+IF Operation <> $'''NHAP_DOANH_THU''' THEN
+    Display.ShowMessageDialog.ShowMessage Title: $'''PAD doanh thu''' Message: $'''File lựa chọn sai nghiệp vụ: %Operation%''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+    EXIT Code: 1
+END
+IF Items.Count = 0 THEN
+    Display.ShowMessageDialog.ShowMessage Title: $'''PAD doanh thu''' Message: $'''Không có SQT nào được chọn.''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+    EXIT Code: 1
+END
+WebAutomation.LaunchChrome.LaunchChrome Url: QuyetToanUrl WindowState: WebAutomation.BrowserWindowState.Maximized ClearCache: False ClearCookies: False WaitForPageToLoadTimeout: 60 Timeout: 60 PiPUserDataFolderMode: WebAutomation.PiPUserDataFolderModeEnum.AutomaticProfile TargetDesktop: $'''{\"DisplayName\":\"Local computer\",\"Route\":{\"ServerType\":\"Local\",\"ServerAddress\":\"\"},\"DesktopType\":\"local\"}''' BrowserInstance=> Browser
+WAIT 2
+LOOP FOREACH CurrentItem IN Items
+    SET TargetSqt TO CurrentItem['sqt']
+    SET TargetContainers TO CurrentItem['containers_key']
+    SET TargetAmountRaw TO CurrentItem['amount_vnd']
+    Text.FromNumber Number: TargetAmountRaw DecimalPlaces: 0 UseThousandsSeparator: False FormattedNumber=> TargetAmount
+
+    WebAutomation.ExecuteJavascript BrowserInstance: Browser Javascript: $'''function ExecuteScript() {
+        var sqt = '%TargetSqt%';
+        var inputs = Array.from(document.querySelectorAll('input'));
+        var search = inputs.find(function (el) {
+            return (el.getAttribute('placeholder') || '').toLowerCase().includes('tìm kiếm');
+        });
+        if (!search) return 'SEARCH_INPUT_NOT_FOUND';
+        search.focus();
+        var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        setter.call(search, sqt);
+        search.dispatchEvent(new Event('input', {bubbles: true}));
+        search.dispatchEvent(new Event('change', {bubbles: true}));
+        var box = search.getBoundingClientRect();
+        var buttons = Array.from(document.querySelectorAll('button')).filter(function (button) {
+            var r = button.getBoundingClientRect();
+            return r.width && r.height && r.left >= box.right &&
+                r.left - box.right < 160 && Math.abs((r.top + r.bottom) / 2 - (box.top + box.bottom) / 2) < 55;
+        });
+        if (buttons.length === 1) buttons[0].click();
+        else search.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
+        return 'SEARCHED';
+    }''' Result=> SearchStatus
+    IF SearchStatus <> $'''SEARCHED''' THEN
+        Display.ShowMessageDialog.ShowMessage Title: $'''Lỗi tìm SQT''' Message: $'''SQT %TargetSqt%: %SearchStatus%. Chưa cập nhật trạng thái.''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+        EXIT Code: 1
+    END
+    WAIT 2
+
+    WebAutomation.ExecuteJavascript BrowserInstance: Browser Javascript: $'''function ExecuteScript() {
+        var sqt = '%TargetSqt%';
+        var containers = '%TargetContainers%';
+        var rows = Array.from(document.querySelectorAll('tr'));
+        var matches = rows.filter(function (row) {
+            var cells = row.querySelectorAll('td');
+            if (cells.length < 6) return false;
+            var numbers = (cells[2].textContent || '').match(/[0-9]+/g) || [];
+            var webContainer = (cells[5].textContent || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+            return numbers[0] === sqt && containers.includes('|' + webContainer + '|');
+        });
+        if (matches.length !== 1) return 'SQT_MATCH_COUNT_' + matches.length;
+        var actions = Array.from(matches[0].querySelectorAll('button,a'));
+        var button = actions.find(function (el) {
+            return (el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase() === 'doanh thu';
+        });
+        if (!button) return 'REVENUE_BUTTON_NOT_FOUND';
+        button.click();
+        return 'OPENED';
+    }''' Result=> OpenStatus
+    IF OpenStatus <> $'''OPENED''' THEN
+        Display.ShowMessageDialog.ShowMessage Title: $'''Lỗi mở doanh thu''' Message: $'''SQT %TargetSqt%: %OpenStatus%. Chưa cập nhật trạng thái.''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+        EXIT Code: 1
+    END
+    WAIT 1
+
+    WebAutomation.ExecuteJavascript BrowserInstance: Browser Javascript: $'''function ExecuteScript() {
+        var sqt = '%TargetSqt%';
+        var target = '%TargetAmount%';
+        var modals = Array.from(document.querySelectorAll('.modal,[role=dialog]')).filter(function (el) {
+            var r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        });
+        var modal = modals.find(function (el) {
+            var title = (el.querySelector('.modal-title') || el).textContent || '';
+            var numbers = title.match(/[0-9]+/g) || [];
+            return title.toLowerCase().includes('doanh thu') && numbers.includes(sqt);
+        });
+        if (!modal) return 'REVENUE_MODAL_NOT_FOUND';
+        var row = Array.from(modal.querySelectorAll('tr')).find(function (tr) {
+            var cell = tr.querySelector('td');
+            return cell && (cell.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase() === 'thu lần 1';
+        });
+        if (!row) return 'FIRST_COLLECTION_ROW_NOT_FOUND';
+        var cells = row.querySelectorAll('td');
+        var input = cells[3] && cells[3].querySelector('input');
+        if (!input) return 'AMOUNT_INPUT_NOT_FOUND';
+        var money = function (value) { return (value || '').replace(/[^0-9]/g, '').replace(/^0+(?=[0-9])/, ''); };
+        if (money(input.value) === target) return 'SAME';
+        input.scrollIntoView({block: 'center'});
+        input.focus();
+        var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        setter.call(input, target);
+        input.dispatchEvent(new Event('input', {bubbles: true}));
+        input.dispatchEvent(new Event('change', {bubbles: true}));
+        input.blur();
+        return money(input.value) === target ? 'FILLED' : 'VERIFY_INPUT_FAILED';
+    }''' Result=> FillStatus
+    IF FillStatus <> $'''SAME''' THEN
+        IF FillStatus <> $'''FILLED''' THEN
+            Display.ShowMessageDialog.ShowMessage Title: $'''Lỗi nhập doanh thu''' Message: $'''SQT %TargetSqt%: %FillStatus%. Chưa lưu hoặc cập nhật trạng thái.''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+            EXIT Code: 1
+        END
+        WebAutomation.ExecuteJavascript BrowserInstance: Browser Javascript: $'''function ExecuteScript() {
+            var modal = Array.from(document.querySelectorAll('.modal,[role=dialog]')).find(function (el) {
+                var r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0 && (el.textContent || '').includes('Thu lần 1');
+            });
+            if (!modal) return 'MODAL_NOT_FOUND';
+            var button = Array.from(modal.querySelectorAll('button,a,input[type=submit]')).find(function (el) {
+                return (el.textContent || el.value || '').replace(/\s+/g, ' ').trim() === 'Lưu thông tin';
+            });
+            if (!button || button.disabled) return 'SAVE_BUTTON_NOT_AVAILABLE';
+            button.click();
+            return 'SAVE_CLICKED';
+        }''' Result=> SaveStatus
+        IF SaveStatus <> $'''SAVE_CLICKED''' THEN
+            Display.ShowMessageDialog.ShowMessage Title: $'''Lỗi lưu doanh thu''' Message: $'''SQT %TargetSqt%: %SaveStatus%. Chưa cập nhật trạng thái.''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+            EXIT Code: 1
+        END
+        WAIT 2
+        MouseAndKeyboard.SendKeys.FocusAndSendKeys TextToSend: $'''{F5}''' DelayBetweenKeystrokes: 10 SendTextAsHardwareKeys: True
+        WAIT 3
+        WebAutomation.ExecuteJavascript BrowserInstance: Browser Javascript: $'''function ExecuteScript() {
+            var sqt = '%TargetSqt%';
+            var containers = '%TargetContainers%';
+            var search = Array.from(document.querySelectorAll('input')).find(function (el) {
+                return (el.getAttribute('placeholder') || '').toLowerCase().includes('tìm kiếm');
+            });
+            if (!search) return 'SEARCH_INPUT_NOT_FOUND';
+            var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+            setter.call(search, sqt);
+            search.dispatchEvent(new Event('input', {bubbles: true}));
+            search.dispatchEvent(new Event('change', {bubbles: true}));
+            var box = search.getBoundingClientRect();
+            var buttons = Array.from(document.querySelectorAll('button')).filter(function (button) {
+                var r = button.getBoundingClientRect();
+                return r.width && r.height && r.left >= box.right &&
+                    r.left - box.right < 160 && Math.abs((r.top + r.bottom) / 2 - (box.top + box.bottom) / 2) < 55;
+            });
+            if (buttons.length === 1) buttons[0].click();
+            else search.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', bubbles: true}));
+            return 'SEARCHED';
+        }''' Result=> ReSearchStatus
+        IF ReSearchStatus <> $'''SEARCHED''' THEN
+            Display.ShowMessageDialog.ShowMessage Title: $'''Lỗi tìm lại SQT''' Message: $'''SQT %TargetSqt%: %ReSearchStatus%. Chưa cập nhật trạng thái.''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+            EXIT Code: 1
+        END
+        WAIT 2
+        WebAutomation.ExecuteJavascript BrowserInstance: Browser Javascript: $'''function ExecuteScript() {
+            var sqt = '%TargetSqt%';
+            var modals = Array.from(document.querySelectorAll('.modal,[role=dialog]'));
+            var open = modals.some(function (el) {
+                var r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0 && (el.textContent || '').includes('Thu lần 1');
+            });
+            if (open) return 'ALREADY_OPEN';
+            var matches = Array.from(document.querySelectorAll('tr')).filter(function (row) {
+                var cells = row.querySelectorAll('td');
+                var numbers = cells.length > 5 ? (cells[2].textContent || '').match(/[0-9]+/g) || [] : [];
+                var webContainer = cells.length > 5 ?
+                    (cells[5].textContent || '').toUpperCase().replace(/[^A-Z0-9]/g, '') : '';
+                return numbers[0] === sqt && containers.includes('|' + webContainer + '|');
+            });
+            if (matches.length !== 1) return 'SQT_MATCH_COUNT_' + matches.length;
+            var button = Array.from(matches[0].querySelectorAll('button,a')).find(function (el) {
+                return (el.textContent || '').trim().toLowerCase() === 'doanh thu';
+            });
+            if (!button) return 'REVENUE_BUTTON_NOT_FOUND';
+            button.click();
+            return 'REOPENED';
+        }''' Result=> ReopenStatus
+        IF ReopenStatus <> $'''REOPENED''' THEN
+            IF ReopenStatus <> $'''ALREADY_OPEN''' THEN
+                Display.ShowMessageDialog.ShowMessage Title: $'''Lỗi kiểm tra sau lưu''' Message: $'''SQT %TargetSqt%: %ReopenStatus%. Chưa cập nhật trạng thái.''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+                EXIT Code: 1
+            END
+        END
+        WAIT 1
+    END
+
+    WebAutomation.ExecuteJavascript BrowserInstance: Browser Javascript: $'''function ExecuteScript() {
+        var target = '%TargetAmount%';
+        var sqt = '%TargetSqt%';
+        var modal = Array.from(document.querySelectorAll('.modal,[role=dialog]')).find(function (el) {
+            var r = el.getBoundingClientRect();
+            var title = (el.querySelector('.modal-title') || el).textContent || '';
+            return r.width > 0 && r.height > 0 && title.toLowerCase().includes('doanh thu') &&
+                (title.match(/[0-9]+/g) || []).includes(sqt);
+        });
+        if (!modal) return 'MODAL_NOT_FOUND';
+        var row = Array.from(modal.querySelectorAll('tr')).find(function (tr) {
+            var cell = tr.querySelector('td');
+            return cell && (cell.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase() === 'thu lần 1';
+        });
+        var input = row && row.querySelectorAll('td')[3] && row.querySelectorAll('td')[3].querySelector('input');
+        if (!input) return 'AMOUNT_INPUT_NOT_FOUND';
+        var actual = (input.value || '').replace(/[^0-9]/g, '').replace(/^0+(?=[0-9])/, '');
+        return actual === target ? 'VERIFIED' : 'AMOUNT_MISMATCH_' + actual;
+    }''' Result=> VerifyStatus
+    IF VerifyStatus <> $'''VERIFIED''' THEN
+        Display.ShowMessageDialog.ShowMessage Title: $'''Lỗi xác minh doanh thu''' Message: $'''SQT %TargetSqt%: %VerifyStatus%. Chưa cập nhật trạng thái.''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+        EXIT Code: 1
+    END
+
+    SET MarkCommand TO $'''chcp 65001 >nul & set \"PYTHONUTF8=1\" & \"%PythonExe%\" -X utf8 \"%HelperScript%\" mark-imported --selection \"%SelectionFile%\" --sqt \"%TargetSqt%\"'''
+    Scripting.RunDOSCommand.RunDOSCommand DOSCommandOrApplication: MarkCommand WorkingDirectory: ProjectRoot StandardOutput=> MarkOutput StandardError=> MarkError ExitCode=> MarkExitCode
+    IF MarkExitCode <> 0 THEN
+        Display.ShowMessageDialog.ShowMessage Title: $'''Lỗi cập nhật SQLite''' Message: $'''Web đã đúng tiền nhưng chưa đánh dấu SQT %TargetSqt% là Đã nhập. %MarkError%''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+        EXIT Code: 1
+    END
+    SET ProcessedSqtCount TO ProcessedSqtCount + 1
+    MouseAndKeyboard.SendKeys.FocusAndSendKeys TextToSend: $'''{F5}''' DelayBetweenKeystrokes: 10 SendTextAsHardwareKeys: True
+    WAIT 3
+END
+SET FinishCommand TO $'''chcp 65001 >nul & set \"PYTHONUTF8=1\" & \"%PythonExe%\" -X utf8 \"%HelperScript%\" finish --selection \"%SelectionFile%\"'''
+Scripting.RunDOSCommand.RunDOSCommand DOSCommandOrApplication: FinishCommand WorkingDirectory: ProjectRoot StandardOutput=> FinishOutput StandardError=> FinishError ExitCode=> FinishExitCode
+IF FinishExitCode <> 0 THEN
+    Display.ShowMessageDialog.ShowMessage Title: $'''Lỗi kết thúc lượt doanh thu''' Message: $'''%FinishError%''' Icon: Display.Icon.ErrorIcon Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+    EXIT Code: 1
+END
+WebAutomation.CloseWebBrowser BrowserInstance: Browser
+Display.ShowMessageDialog.ShowMessage Title: $'''PAD doanh thu''' Message: $'''Đã xử lý %ProcessedSqtCount% SQT doanh thu.''' Icon: Display.Icon.None Buttons: Display.Buttons.OK DefaultButton: Display.DefaultButton.Button1 IsTopMost: True ButtonPressed=> ButtonPressed
+EXIT Code: 0

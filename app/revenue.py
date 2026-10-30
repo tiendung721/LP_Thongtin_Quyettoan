@@ -69,9 +69,8 @@ def normalize_container(value: Any) -> str:
 
 
 def review_errors(partner: str, sqt: str, container: str, amount_vnd: int | None) -> list[str]:
+    """Only the three fields sent to PAD determine revenue readiness."""
     errors = []
-    if not partner.strip():
-        errors.append("Thiếu đối tác")
     if not sqt.strip() or not sqt.isdigit() or int(sqt) <= 0:
         errors.append("SQT phải là số dương")
     if not re.fullmatch(r"[A-Z]{4}\d{7}", container):
@@ -142,6 +141,19 @@ class RevenueStore:
                 CREATE INDEX IF NOT EXISTS idx_revenue_state
                     ON revenue_rows(review_status, import_status);
             """)
+            # Earlier versions also required a partner and resolved warnings.
+            # Review state is derived from the three fields actually sent to PAD.
+            for row in conn.execute(
+                "SELECT id,partner,sqt,container,amount_vnd,review_status FROM revenue_rows"
+            ).fetchall():
+                status = "CAN_KIEM_TRA" if review_errors(
+                    row["partner"], row["sqt"], row["container"], row["amount_vnd"]
+                ) else "OK"
+                if status != row["review_status"]:
+                    conn.execute(
+                        "UPDATE revenue_rows SET review_status=? WHERE id=?",
+                        (status, row["id"]),
+                    )
 
     def ingest_payload(self, payload: dict[str, Any], output_path: str = "") -> int:
         """Insert new GPT rows, preserving all user edits on repeated imports."""
@@ -196,8 +208,7 @@ class RevenueStore:
                 valid_md5 = bool(re.fullmatch(r"[0-9a-f]{32}", md5))
                 if not valid_md5:
                     warnings.append("Không xác minh được MD5 file nguồn.")
-                needs_attention = bool(warnings) or _plain(row.get("do_tin_cay")) == "thap" or _plain(row.get("trang_thai")) not in ("", "ok")
-                status = "CAN_KIEM_TRA" if review_errors(partner, sqt, container, amount) or needs_attention else "OK"
+                status = "CAN_KIEM_TRA" if review_errors(partner, sqt, container, amount) else "OK"
                 cursor = conn.execute(
                     "INSERT OR IGNORE INTO revenue_rows "
                     "(source_id,source_ref,source_sheet,source_page,source_line,partner,sqt,container,"
@@ -220,45 +231,57 @@ class RevenueStore:
 
     def save_row(
         self, row_id: int, *, partner: str, sqt: str, container: str,
-        amount: Any, warning_resolved: bool, import_status: str,
+        amount: Any, warning_resolved: bool = False, import_status: str,
     ) -> dict[str, Any]:
-        if import_status not in ("CHUA_NHAP", "DA_NHAP"):
-            raise ValueError("Trạng thái nhập không hợp lệ.")
-        amount_vnd = parse_amount_vnd(amount)
-        if str(amount).strip() and amount_vnd is None:
-            raise ValueError("Thành tiền gồm VAT phải là số nguyên VND hợp lệ.")
-        partner = partner.strip()
-        sqt = normalize_sqt(sqt)
-        container = normalize_container(container)
+        return self.save_rows([{
+            "id": row_id, "partner": partner, "sqt": sqt,
+            "container": container, "amount": amount,
+            "warning_resolved": warning_resolved,
+            "import_status": import_status,
+        }])[0]
+
+    def save_rows(self, changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Save all edits and manual import states in one SQLite transaction."""
+        if len({change.get("id") for change in changes}) != len(changes):
+            raise ValueError("Một dòng doanh thu xuất hiện nhiều lần trong lượt lưu.")
+        saved: list[dict[str, Any]] = []
         with self._connect() as conn:
-            existing = conn.execute("SELECT * FROM revenue_rows WHERE id=?", (row_id,)).fetchone()
-            if existing is None:
-                raise ValueError("Không còn dòng doanh thu này.")
-            before = dict(existing)
-            warning_items = json.loads(before["warning_json"])
-            raw = json.loads(before["raw_json"])
-            source_alert = bool(warning_items) or _plain(raw.get("do_tin_cay")) == "thap" or _plain(raw.get("trang_thai")) not in ("", "ok")
-            status = "CAN_KIEM_TRA" if review_errors(partner, sqt, container, amount_vnd) or (source_alert and not warning_resolved) else "OK"
-            after = {**before, "partner": partner, "sqt": sqt, "container": container,
-                     "amount_vnd": amount_vnd, "warning_resolved": int(warning_resolved),
-                     "review_status": status, "import_status": import_status}
-            changed = any(after[key] != before[key] for key in (
-                "partner", "sqt", "container", "amount_vnd", "warning_resolved",
-                "review_status", "import_status",
-            ))
-            if changed:
-                now = _now()
-                conn.execute(
-                    "UPDATE revenue_rows SET partner=?,sqt=?,container=?,amount_vnd=?,"
-                    "warning_resolved=?,review_status=?,import_status=?,updated_at=? WHERE id=?",
-                    (partner, sqt, container, amount_vnd, int(warning_resolved), status,
-                     import_status, now, row_id),
-                )
-                keys = ("partner", "sqt", "container", "amount_vnd", "warning_resolved", "review_status", "import_status")
-                conn.execute(
-                    "INSERT INTO revenue_row_events (revenue_row_id,before_json,after_json,changed_at) "
-                    "VALUES (?,?,?,?)",
-                    (row_id, json.dumps({key: before[key] for key in keys}, ensure_ascii=False),
-                     json.dumps({key: after[key] for key in keys}, ensure_ascii=False), now),
-                )
-            return after
+            for change in changes:
+                row_id = int(change["id"])
+                import_status = str(change["import_status"])
+                if import_status not in ("CHUA_NHAP", "DA_NHAP"):
+                    raise ValueError("Trạng thái nhập không hợp lệ.")
+                raw_amount = change.get("amount")
+                amount_vnd = parse_amount_vnd(raw_amount)
+                if str(raw_amount or "").strip() and amount_vnd is None:
+                    raise ValueError("Thành tiền gồm VAT phải là số nguyên VND hợp lệ.")
+                partner = str(change.get("partner") or "").strip()
+                sqt = normalize_sqt(change.get("sqt"))
+                container = normalize_container(change.get("container"))
+                existing = conn.execute("SELECT * FROM revenue_rows WHERE id=?", (row_id,)).fetchone()
+                if existing is None:
+                    raise ValueError("Không còn dòng doanh thu này.")
+                before = dict(existing)
+                warning_resolved = int(change.get("warning_resolved", before["warning_resolved"]))
+                status = "CAN_KIEM_TRA" if review_errors(partner, sqt, container, amount_vnd) else "OK"
+                after = {**before, "partner": partner, "sqt": sqt, "container": container,
+                         "amount_vnd": amount_vnd, "warning_resolved": warning_resolved,
+                         "review_status": status, "import_status": import_status}
+                keys = ("partner", "sqt", "container", "amount_vnd", "warning_resolved",
+                        "review_status", "import_status")
+                if any(after[key] != before[key] for key in keys):
+                    now = _now()
+                    conn.execute(
+                        "UPDATE revenue_rows SET partner=?,sqt=?,container=?,amount_vnd=?,"
+                        "warning_resolved=?,review_status=?,import_status=?,updated_at=? WHERE id=?",
+                        (partner, sqt, container, amount_vnd, warning_resolved, status,
+                         import_status, now, row_id),
+                    )
+                    conn.execute(
+                        "INSERT INTO revenue_row_events "
+                        "(revenue_row_id,before_json,after_json,changed_at) VALUES (?,?,?,?)",
+                        (row_id, json.dumps({key: before[key] for key in keys}, ensure_ascii=False),
+                         json.dumps({key: after[key] for key in keys}, ensure_ascii=False), now),
+                    )
+                saved.append(after)
+        return saved

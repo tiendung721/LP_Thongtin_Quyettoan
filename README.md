@@ -8,13 +8,36 @@ Phần mềm nhận từng dòng doanh thu vào SQLite `Database/app_state.db` t
 JSON tạm bị thay thế. Bước 2 chỉ kiểm tra Phiếu cân, Bill và Khoản chi; doanh thu
 được kiểm tra trong cửa sổ **Nhập doanh thu** ở Bước 4.
 
-Trong cửa sổ này, bấm SQT và container để sửa đối tác, SQT, container, tiền gồm
-VAT; bấm **Lưu** để ghi vào SQLite. Hai cột **Trạng thái kiểm tra** (OK/Cần kiểm
-tra) và **Tiến độ nhập** (Chưa nhập/Đã nhập, có thể đổi thủ công) độc lập với
-nhau. Dòng thiếu thông tin vẫn nằm trong cùng bảng. Chỉ dòng OK và Chưa nhập
-được chọn cho lượt nhập sau này. Nút **Chạy nhập doanh thu** hiện thông báo khi
-PAD doanh thu chưa được cấu hình; chưa gửi dữ liệu hoặc tự đổi trạng thái nhập.
+Trong cửa sổ này, bảng chiếm toàn bộ chiều ngang. Bấm một dòng để mở cửa sổ
+chỉnh sửa, áp dụng nhiều thay đổi rồi bấm **Lưu tất cả** để ghi cùng một lượt
+vào SQLite. Có thể chọn nhiều dòng và đổi tiến độ nhập hàng loạt. **Trạng thái
+kiểm tra** (OK/Cần kiểm tra) và **Tiến độ nhập** (Chưa nhập màu đỏ/Đã nhập màu
+xanh, có thể đổi thủ công) độc lập với nhau. Doanh thu OK khi có SQT số dương,
+container đúng dạng và tiền gồm VAT nguyên VND dương; đối tác và cảnh báo nguồn
+vẫn được hiển thị nhưng không chặn OK. Dòng thiếu dữ liệu vẫn nằm trong cùng
+bảng. Chỉ dòng OK và Chưa nhập đủ điều kiện cho lượt nhập sau này. Nút **Chạy
+nhập doanh thu** gửi các SQT đã chọn cho PAD. Mỗi SQT lấy tổng tất cả dòng doanh
+thu trong SQLite. PAD kiểm tra SQT và container trên web, điền số tiền vào
+**Thu lần 1** nếu khác, bấm **Lưu thông tin**,
+tải lại trang để xác minh rồi mới đổi tiến độ thành **Đã nhập**. Nếu số tiền đã
+đúng, PAD bỏ qua thao tác nhập và ghi nhận tiến độ.
 Hai luồng Nhập thông tin và Nhập khoản chi vẫn dùng Excel hằng ngày như trước.
+
+### Cài flow PAD doanh thu
+
+1. Tạo flow trong Power Automate Desktop với tên `Test - nhập doanh thu`, rồi
+   dán các action trong `PAD_Nhap_Doanh_Thu.txt` vào flow. Nếu đặt tên khác,
+   sửa `input_revenue.workflow_name` trong `Config/pad_flows.json`.
+2. Đầu flow có biến `ProjectRoot` trỏ tới thư mục dự án. Cập nhật biến này nếu
+   chuyển dự án sang máy hoặc thư mục khác. App ghi lượt chọn vào
+   `runtime/rpa_revenue_selection.json`; flow gọi
+   `scripts/rpa_revenue_helper.py` để đổi trạng thái SQLite.
+3. Đăng nhập trang quyết toán trong Chrome của PAD, chạy thử một SQT và kiểm tra
+   ô **Số tiền** của dòng **Thu lần 1**. Các selector web trong flow được xây từ
+   ảnh màn hình đã cung cấp; cần xác nhận trên trang thật trước khi chạy hàng loạt.
+
+Nếu flow dừng giữa chừng, file lượt chọn được giữ lại. Bấm **Chạy nhập doanh thu**
+và chọn **Chạy tiếp** để PAD xử lý lại; các SQT đã đúng tiền được bỏ qua.
 
 Khi chuyển sang máy khác, app tự đổi các đường dẫn nằm trong thư mục cài cũ
 sang thư mục cài mới nếu thư mục cũ không còn tồn tại. File SQLite mới được tạo

@@ -200,6 +200,8 @@ Các trường còn lại dùng để truy vết, kiểm tra, đối chiếu và
 
 Mỗi object trong du_lieu_boc_tach phải có key trang_thai.
 
+Riêng Doanh thu áp dụng điều kiện ba trường ở mục 8.4: cảnh báo nguồn, độ tin cậy thấp hoặc thiếu đối tác vẫn được hiển thị nhưng không tự đổi OK thành Cần kiểm tra khi SQT, container và tiền gồm VAT đã hợp lệ.
+
 Chỉ dùng đúng 2 giá trị:
 - OK
 - Cần kiểm tra
@@ -558,11 +560,11 @@ Các trường không thuộc Khoản chi để null:
 Nhận diện bảng doanh thu theo nội dung quyết toán công nợ/doanh thu bán hàng hoặc giao hàng cho đối tác, có SQT, Số Container và cột "Thành tiền bao gồm VAT" (hoặc nhãn tương đương rõ ràng). Không gọi bảng là Doanh thu chỉ vì có SQT hay tiền: bảng ghi chi phí, vật tư, cước phải tiếp tục là Khoản chi. Đọc tất cả sheet Excel, mọi trang PDF/ảnh và mọi bảng có liên quan; có thể có nhiều đối tác trong cùng file. Mỗi dòng container là một object, kể cả khi nhiều container chung SQT.
 
 - `sqt`: chép SQT thể hiện rõ ở dòng nguồn. Không gán `stt_hien_thi` hoặc STT bảng thành SQT; không tự tăng, tính hay lấy từ file khác.
-- `doi_tac`: tên đối tác thể hiện rõ ở tên sheet, tiêu đề bảng hoặc phần kính gửi của chính nguồn; nếu các vị trí mâu thuẫn thì null và cảnh báo. Không dùng `nguoi_nhan` cho đối tác doanh thu, vì quy tắc `nguoi_nhan` chỉ nhận từ lời nhắn người dùng.
+- `doi_tac`: tên đối tác thể hiện rõ ở tên sheet, tiêu đề bảng hoặc phần kính gửi của chính nguồn; nếu thiếu hoặc các vị trí mâu thuẫn thì null và cảnh báo, nhưng riêng việc thiếu đối tác không làm dòng Doanh thu mất trạng thái OK. Không dùng `nguoi_nhan` cho đối tác doanh thu, vì quy tắc `nguoi_nhan` chỉ nhận từ lời nhắn người dùng.
 - `thanh_tien_gom_vat`: chỉ đọc số tiền gồm VAT của đúng dòng container. Không lấy "Thành tiền chưa VAT", "TT Bổ sung", "Số dư", dòng thanh toán hoặc dòng tổng. Không tự tính từ tiền trước VAT/thuế, không sao chép số tiền của dòng khác.
 - `sheet_nguon` cho Excel; `trang_nguon` cho PDF/ảnh; `dong_nguon` là số dòng bảng/Excel khi xác định được. Trường không áp dụng thì null. `ky_du_lieu` chỉ điền khi tháng/năm được thể hiện rõ trong tài liệu, không suy từ ngày giao của một container.
 - Bỏ qua dòng số dư đầu tháng, đã xuất hóa đơn, tổng phát sinh, thanh toán và tổng nợ nếu chúng không phải một dòng container thực. Có thể lưu thông tin đó trong `raw_data` để truy vết.
-- Thiếu hoặc mơ hồ SQT, đối tác, container hoặc tiền gồm VAT: giữ dòng có thể xác định được, để trường thiếu = null, đặt `trang_thai = "Cần kiểm tra"`, nêu đúng trường và vị trí nguồn trong `canh_bao`. OCR mơ hồ không được đoán. Nếu không xác định được đơn vị tiền hoặc tiền có phần lẻ, cảnh báo để người dùng kiểm tra.
+- Riêng Doanh thu: `trang_thai = "OK"` và đủ điều kiện nhập khi có **SQT là số dương, container đúng dạng 4 chữ + 7 số, tiền gồm VAT là số nguyên VND dương**. Chỉ thiếu/sai một trong ba trường này mới đặt "Cần kiểm tra". Đối tác thiếu, cảnh báo nguồn hoặc độ tin cậy thấp vẫn ghi vào `canh_bao`/`do_tin_cay` để người dùng xem nhưng không tự chặn trạng thái OK. OCR mơ hồ không được đoán giá trị; không xác định chắc trường nào thì để null. Nếu tiền có phần lẻ hoặc không rõ đơn vị, để null và cảnh báo.
 - Không đưa giá trị doanh thu vào `gia_vat_lieu`, `thanh_tien` hoặc `tong_tien` của Khoản chi. Giữ các key chung không áp dụng là null; `so_container` lấy theo quy tắc chuẩn hóa chung.
 
 Ví dụ: sheet "Mía đường TN", dòng 9 có SQT 920, container VSGU2231272, cột "Thành tiền bao gồm VAT" 75.239.928 → `doanh_thu = {"sqt":"920","doi_tac":"Mía đường TN","thanh_tien_gom_vat":75239928,"ky_du_lieu":"10/2026","sheet_nguon":"Mía đường TN","trang_nguon":null,"dong_nguon":"9"}`. Dòng có SQT và container nhưng ô tiền gồm VAT rỗng vẫn tạo object Cần kiểm tra với tiền null.

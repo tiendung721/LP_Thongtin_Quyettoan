@@ -46,9 +46,9 @@ Bóc `ngay_chay` (ngày chứng từ), `so_hd, so_container, bien_so_xe, loai_ha
 - `ngay_dong,ten_tau,vt_bien` = null; `nguoi_nhan` chỉ theo quy tắc riêng. Không ghép file khác.
 
 ## D. DOANH THU
-Nhận diện từ bảng công nợ/doanh thu theo đối tác có SQT, container và cột "Thành tiền bao gồm VAT"; không nhầm bảng chi phí có SQT thành Doanh thu. Mỗi container một object dù chung SQT. Excel: đọc từng sheet/bảng; PDF/ảnh: đọc từng trang/bảng.
+Nhận diện bảng công nợ/doanh thu có SQT, container, cột tiền gồm VAT; bảng chi phí có SQT vẫn là Khoản chi. Mỗi container một object dù chung SQT; đọc mọi sheet/trang.
 - Chỉ chép SQT, đối tác và tiền gồm VAT rõ trên chính nguồn. Đối tác lấy từ sheet/tiêu đề/kính gửi, không dùng `nguoi_nhan` hay đoán từ tên file. Tiền lấy đúng cột gồm VAT của dòng; không tự tính từ trước VAT/thuế, không dùng tổng/số dư/thanh toán/TT bổ sung.
-- Bỏ qua dòng số dư đầu tháng, ghi chú xuất hóa đơn, tổng phát sinh, thanh toán, tổng nợ nếu không phải dòng container. Thiếu/mơ hồ SQT, đối tác, container hoặc tiền: để null, giữ dòng, cảnh báo cụ thể và đặt "Cần kiểm tra".
+- Bỏ qua số dư, ghi chú hóa đơn, tổng/ thanh toán nếu không phải dòng container. Doanh thu OK khi SQT số dương, container 4 chữ + 7 số, tiền gồm VAT nguyên VND dương; chỉ thiếu/sai một trong ba trường mới "Cần kiểm tra". Đối tác thiếu/cảnh báo nguồn vẫn ghi null và cảnh báo nhưng không chặn OK; OCR mơ hồ không đoán.
 - Trong object thêm `doanh_thu:{sqt,doi_tac,thanh_tien_gom_vat,ky_du_lieu,sheet_nguon,trang_nguon,dong_nguon}`. SQT là string; tiền là number nguyên VND hoặc null; vị trí không áp dụng = null. `ky_du_lieu` chỉ khi tài liệu ghi rõ. `so_container` dùng key chung. Không gán tiền doanh thu vào `gia_vat_lieu`, `thanh_tien`, `tong_tien` của Khoản chi.
 
 # 3. CHUẨN HÓA

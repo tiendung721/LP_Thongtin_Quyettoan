@@ -10,9 +10,10 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QDialog
 
-from app.dialogs.revenue_dialog import RevenueDialog
+from app.dialogs.revenue_dialog import RevenueDialog, RevenueEditDialog
 from app.daily_import_ui import JsonExtractDialog
 from app.config import AppConfig, get_default_settings
 from app.database import Database
@@ -80,38 +81,98 @@ class RevenueTests(unittest.TestCase):
         self.store.ingest_payload({"du_lieu_boc_tach": [amended]}, "second.json")
         rows = self.store.list_rows()
         self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[0]["review_status"], "CAN_KIEM_TRA")
+        self.assertEqual(rows[0]["review_status"], "OK")
         self.assertIn("Nghi trùng", rows[0]["warning_json"])
 
-    def test_dialog_edits_one_container_and_keeps_two_statuses_separate(self) -> None:
+    def test_missing_partner_and_source_warning_do_not_block_revenue(self) -> None:
+        row = _row("920", "VSGU2231272", 75239928, "9", status="Cần kiểm tra")
+        row["doanh_thu"]["doi_tac"] = None
+        row["canh_bao"] = ["Thiếu đối tác"]
+        self.store.ingest_payload({"du_lieu_boc_tach": [row]}, "output.json")
+        saved = self.store.list_rows()[0]
+        self.assertEqual(saved["partner"], "")
+        self.assertEqual(saved["review_status"], "OK")
+
+    def test_existing_revenue_rows_recompute_review_status_on_upgrade(self) -> None:
+        row = _row("920", "VSGU2231272", 75239928, "9")
+        row["doanh_thu"]["doi_tac"] = None
+        self.store.ingest_payload({"du_lieu_boc_tach": [row]}, "output.json")
+        with self.store._connect() as conn:
+            conn.execute("UPDATE revenue_rows SET review_status='CAN_KIEM_TRA'")
+        self.store.init_db()
+        self.assertEqual(self.store.list_rows()[0]["review_status"], "OK")
+
+    def test_batch_save_is_atomic(self) -> None:
+        self.store.ingest_payload({"du_lieu_boc_tach": [
+            _row("920", "VSGU2231272", 75239928, "9"),
+            _row("921", "GAOU2133678", 77497560, "10"),
+        ]}, "output.json")
+        rows = self.store.list_rows()
+        changes = [{
+            "id": row["id"], "partner": row["partner"], "sqt": row["sqt"],
+            "container": row["container"], "amount": row["amount_vnd"],
+            "import_status": "DA_NHAP",
+        } for row in rows]
+        changes[1]["import_status"] = "KHONG_HOP_LE"
+        with self.assertRaises(ValueError):
+            self.store.save_rows(changes)
+        self.assertTrue(all(row["import_status"] == "CHUA_NHAP" for row in self.store.list_rows()))
+
+    def test_dialog_stages_edits_and_bulk_status_until_one_save(self) -> None:
         app = QApplication.instance() or QApplication([])
         self.store.ingest_payload({"du_lieu_boc_tach": [
             _row("920", "VSGU2231272", 75239928, "9"),
             _row("920", "GAOU2133678", None, "10"),
         ]}, "output.json")
         dialog = RevenueDialog(self.store)
-        self.assertEqual(dialog.group_table.rowCount(), 1)
-        self.assertEqual(dialog.line_table.rowCount(), 2)
+        self.assertEqual(dialog.table.rowCount(), 2)
+        self.assertTrue(dialog.windowFlags() & Qt.WindowMaximizeButtonHint)
+        self.assertEqual(dialog.table.item(0, 5).foreground().color().name(), "#dc2626")
         dialog.select_visible.click()
-        self.assertEqual(len(dialog.selected_ids), 1)
-        self.assertEqual(
-            next(row for row in dialog.rows if row["id"] in dialog.selected_ids)["container"],
-            "VSGU2231272",
-        )
-        missing_index = next(
-            index for index, row in enumerate(dialog.visible_lines)
-            if row["container"] == "GAOU2133678"
-        )
-        dialog.line_table.selectRow(missing_index)
-        dialog.amount_edit.setText("77497560")
-        dialog.import_combo.setCurrentIndex(dialog.import_combo.findData("DA_NHAP"))
-        dialog.save_current()
+        self.assertEqual(len(dialog.selected_ids), 2)
+        dialog.bulk_status.setCurrentIndex(dialog.bulk_status.findData("DA_NHAP"))
+        dialog.bulk_apply.click()
+        self.assertEqual(len(dialog.drafts), 2)
+        self.assertTrue(all(row["import_status"] == "CHUA_NHAP" for row in self.store.list_rows()))
+        missing_index = next(index for index, row_id in enumerate(dialog.visible_ids)
+                             if dialog.rows[row_id]["container"] == "GAOU2133678")
+        missing_id = dialog.visible_ids[missing_index]
+        edited = {
+            "partner": "", "sqt": "920", "container": "GAOU2133678",
+            "amount_vnd": 77497560, "import_status": "DA_NHAP",
+        }
+        with patch.object(RevenueEditDialog, "exec", return_value=QDialog.Accepted), patch.object(
+            RevenueEditDialog, "values", return_value=edited
+        ):
+            dialog._on_cell_clicked(missing_index, 4)
+        self.assertEqual(dialog.rows[missing_id]["review_status"], "OK")
+        self.assertIsNone(next(row for row in self.store.list_rows()
+                               if row["id"] == missing_id)["amount_vnd"])
+        dialog.save_button.click()
         rows = self.store.list_rows()
-        changed = next(row for row in rows if row["container"] == "GAOU2133678")
+        changed = next(row for row in rows if row["id"] == missing_id)
+        self.assertEqual(changed["amount_vnd"], 77497560)
         self.assertEqual(changed["review_status"], "OK")
-        self.assertEqual(changed["import_status"], "DA_NHAP")
-        self.assertIn("Nhập một phần", dialog.group_table.item(0, 6).text())
+        self.assertTrue(all(row["import_status"] == "DA_NHAP" for row in rows))
+        self.assertEqual(dialog.table.item(0, 5).foreground().color().name(), "#15803d")
+        with self.store._connect() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM revenue_row_events").fetchone()[0], 2)
         dialog.close()
+        del app
+
+    def test_editor_popup_only_stages_values(self) -> None:
+        app = QApplication.instance() or QApplication([])
+        self.store.ingest_payload({"du_lieu_boc_tach": [
+            _row("920", "VSGU2231272", 75239928, "9"),
+        ]}, "output.json")
+        row = self.store.list_rows()[0]
+        editor = RevenueEditDialog(row)
+        editor.partner_edit.clear()
+        editor.amount_edit.setText("75.239.928")
+        self.assertEqual(editor.values()["amount_vnd"], 75239928)
+        self.assertEqual(editor.values()["partner"], "")
+        self.assertEqual(self.store.list_rows()[0]["partner"], "Mía đường TN")
+        editor.close()
         del app
 
     def test_old_review_screen_preserves_but_does_not_show_revenue(self) -> None:

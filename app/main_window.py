@@ -1529,7 +1529,12 @@ class MainWindow(QMainWindow):
         """Open the revenue review screen, independently of daily Excel."""
         self._restore_revenue_from_current_file()
         try:
-            dialog = RevenueDialog(self.revenue_store, self)
+            dialog = RevenueDialog(
+                self.revenue_store, self,
+                selection_path=self.config.rpa_revenue_selection_path,
+                pad_bat_path=self.config.pad_input_revenue_bat_path,
+                logger=self.logger,
+            )
             dialog.exec()
         except Exception as exc:
             self.logger.exception("Không mở được cửa sổ doanh thu.")
